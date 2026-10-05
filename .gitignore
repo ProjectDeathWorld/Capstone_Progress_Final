@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+**/node_modules/
+vendor/
+**/vendor/
+
+# Build artifacts
+dist/
+**/dist/
+.*-build/
+**/.*-build/
+public/build/
+**/public/build/
+public/hot/
+**/public/hot/
+
+# Environment files
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Cache & Storage
+.phpunit.result.cache
+**/.phpunit.result.cache
+storage/logs/*.log
+**/storage/logs/*.log
+storage/framework/cache/*
+storage/framework/sessions/*
+storage/framework/views/*
+!storage/framework/.gitignore
+!**/storage/framework/.gitignore
+
+# Temporary files & logs
+*.log
+tmp/
+**/tmp/
+composer.phar
+
+# IDE & OS
+.vscode/
+.idea/
+.fleet/
+.DS_Store
+Thumbs.db

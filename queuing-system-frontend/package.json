@@ -1,0 +1,31 @@
+{
+  "name": "queuing-system-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:frontend": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test:reports": "node tests/prepare-report-fixture.mjs && node tests/report-interactions.mjs && node tests/render-report.mjs",
+    "test:staff-mini": "node tests/staff-launcher.mjs && node tests/staff-view-control.mjs && node tests/staff-mini-window.mjs && node tests/staff-transition-speed.mjs && node tests/staff-mini-drag.mjs"
+  },
+  "dependencies": {
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.1",
+    "@mui/material": "^9.2.0",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^4.2.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.20.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "@vitejs/plugin-react": "^4.2.0",
+    "react-test-renderer": "18.3.1",
+    "vite": "^7.0.0"
+  }
+}
