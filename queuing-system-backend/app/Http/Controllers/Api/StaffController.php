@@ -142,7 +142,7 @@ class StaffController extends Controller
             $data = collect($validated)->only(['username', 'full_name', 'position', 'status'])->all();
 
             if ($request->filled('password')) {
-                $data['password'] = Hash::make($request->password);
+                $data['password'] = $request->password;
             }
 
             if ($staff->role === 'security' && $request->filled('security_code')) {

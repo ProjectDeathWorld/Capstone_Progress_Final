@@ -138,7 +138,7 @@ class AuthController extends Controller
         }
 
         try {
-            if (!$passwordIsHashed || Hash::needsRehash($user->password)) {
+            if ($passwordIsHashed) {
                 $user->password = $request->password;
                 $user->save();
             }

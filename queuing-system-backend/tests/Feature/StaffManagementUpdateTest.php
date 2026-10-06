@@ -36,7 +36,7 @@ class StaffManagementUpdateTest extends TestCase
         $this->assertDatabaseHas('service_windows', ['id' => $window->id, 'staff_id' => $staff->user_id, 'window_number' => 1]);
     }
 
-    public function test_optional_password_is_hashed_and_same_username_is_allowed(): void
+    public function test_optional_password_is_updated_and_same_username_is_allowed(): void
     {
         $admin = $this->user('admin1', 'admin', null, 'Administrator');
         $staff = $this->user('registrar1', 'staff', 'registrar', 'Registrar Staff 1');
@@ -47,7 +47,7 @@ class StaffManagementUpdateTest extends TestCase
             'status' => 'active', 'password' => 'new-password', 'password_confirmation' => 'new-password',
         ])->assertOk();
 
-        $this->assertTrue(Hash::check('new-password', $staff->fresh()->password));
+        $this->assertSame('new-password', $staff->fresh()->password);
     }
 
     public function test_admin_can_edit_itm_account_without_resubmitting_its_window(): void
@@ -75,7 +75,7 @@ class StaffManagementUpdateTest extends TestCase
             'staff_id' => $itm->user_id,
             'service_type' => 'ITM',
         ]);
-        $this->assertTrue(Hash::check('updated-password', $itm->fresh()->password));
+        $this->assertSame('updated-password', $itm->fresh()->password);
 
         $this->getJson('/api/staff')->assertOk()
             ->assertJsonFragment([

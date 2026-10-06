@@ -30,7 +30,8 @@ class AdmissionStaffSeeder extends Seeder
         $passwordMatches = false;
         if (!$created) {
             try {
-                $passwordMatches = Hash::check(self::PASSWORD, (string) $user->getRawOriginal('password'));
+                $rawPassword = (string) $user->getRawOriginal('password');
+                $passwordMatches = hash_equals(self::PASSWORD, $rawPassword) || Hash::check(self::PASSWORD, $rawPassword);
             } catch (\Throwable) {
                 $passwordMatches = false;
             }

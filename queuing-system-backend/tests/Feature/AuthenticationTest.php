@@ -12,7 +12,7 @@ class AuthenticationTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_hashed_password_login_trims_username_and_creates_a_token(): void
+    public function test_plain_text_password_login_trims_username_and_creates_a_token(): void
     {
         $user = User::create([
             'username' => 'admin',
@@ -22,7 +22,7 @@ class AuthenticationTest extends TestCase
             'status' => 'active',
         ]);
 
-        $this->assertTrue(Hash::check('admin-password', $user->fresh()->password));
+        $this->assertSame('admin-password', $user->fresh()->password);
 
         $this->postJson('/api/login', [
             'username' => '  admin  ',
@@ -33,11 +33,11 @@ class AuthenticationTest extends TestCase
             ->assertJsonStructure(['token']);
     }
 
-    public function test_matching_legacy_plain_text_password_is_upgraded_after_login(): void
+    public function test_legacy_hashed_password_can_login_and_is_converted_to_plain_text(): void
     {
         $userId = DB::table('users')->insertGetId([
             'username' => 'legacy-staff',
-            'password' => 'legacy-password',
+            'password' => Hash::make('legacy-password'),
             'full_name' => 'Legacy Staff',
             'role' => 'staff',
             'position' => 'registrar',
@@ -50,8 +50,7 @@ class AuthenticationTest extends TestCase
         ])->assertOk();
 
         $storedPassword = User::findOrFail($userId)->password;
-        $this->assertNotSame('legacy-password', $storedPassword);
-        $this->assertTrue(Hash::check('legacy-password', $storedPassword));
+        $this->assertSame('legacy-password', $storedPassword);
     }
 
     public function test_wrong_credentials_and_inactive_accounts_have_distinct_responses(): void
