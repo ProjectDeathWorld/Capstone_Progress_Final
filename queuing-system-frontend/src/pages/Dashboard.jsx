@@ -5,7 +5,8 @@ import AdminLayout from "../components/AdminLayout";
 import KPICard from "../components/KPICard";
 import ModuleCard from "../components/ModuleCard";
 
-import { getDashboardAnalytics } from "../api";
+import { getDashboardAnalytics, getPredictedWaitTimes } from "../api";
+import { getDepartmentDisplayName } from "../utils/departments";
 
 import {
   Box,
@@ -27,6 +28,7 @@ function Dashboard() {
   const navigate = useNavigate();
 
   const [analytics, setAnalytics] = useState(null);
+  const [predictions, setPredictions] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -35,8 +37,17 @@ function Dashboard() {
 
       try {
 
-        const data = await getDashboardAnalytics();
-        setAnalytics(data);
+        const [dashRes, predRes] = await Promise.allSettled([
+          getDashboardAnalytics(),
+          getPredictedWaitTimes(),
+        ]);
+        if (dashRes.status === "fulfilled") setAnalytics(dashRes.value);
+        if (predRes.status === "fulfilled") {
+          const list = Array.isArray(predRes.value?.predictions)
+            ? predRes.value.predictions
+            : (Array.isArray(predRes.value?.data) ? predRes.value.data : []);
+          setPredictions(list);
+        }
 
       } catch (error) {
 
@@ -234,6 +245,192 @@ function Dashboard() {
           ))}
 
         </Grid>
+
+        {/* INTELLIGENCE SECTION */}
+        <Box sx={{ mt: 6, mb: 4 }}>
+          <Typography
+            variant="overline"
+            sx={{
+              display: "inline-block",
+              px: 1.5,
+              py: 0.5,
+              borderRadius: 5,
+              backgroundColor: "#eff6ff",
+              color: "#1d4ed8",
+              fontWeight: "bold",
+              letterSpacing: 1.5,
+              mb: 1,
+            }}
+          >
+            System Intelligence
+          </Typography>
+          <Typography
+            variant="h4"
+            fontWeight="bold"
+            sx={{ mb: 1 }}
+          >
+            INTELLIGENCE
+          </Typography>
+          <Typography
+            color="text.secondary"
+            sx={{ mb: 3 }}
+          >
+            Algorithmic queue analytics and dynamic operational forecasts.
+          </Typography>
+
+          <Box
+            sx={{
+              p: 3,
+              borderRadius: 3,
+              backgroundColor: "#ffffff",
+              border: "1px solid #e2e8f0",
+              boxShadow: "0 2px 10px rgba(0,0,0,0.03)",
+            }}
+          >
+            <Box sx={{ mb: 3, pb: 2, borderBottom: "1px solid #f1f5f9" }}>
+              <Typography variant="h6" fontWeight="bold">
+                Predicted Waiting Time
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Estimates how long a student/customer will likely wait before being served based on the current queue and historical service performance.
+              </Typography>
+            </Box>
+
+            <Grid container spacing={3}>
+              {predictions && predictions.length > 0 ? (
+                predictions.map((dept) => {
+                  const status = String(dept.queue_status || "LOW").toUpperCase();
+                  const statusColor =
+                    status === "CRITICAL"
+                      ? "#ef4444"
+                      : status === "HIGH"
+                      ? "#f97316"
+                      : status === "NORMAL"
+                      ? "#0284c7"
+                      : "#10b981";
+                  const statusBg =
+                    status === "CRITICAL"
+                      ? "#fee2e2"
+                      : status === "HIGH"
+                      ? "#ffedd5"
+                      : status === "NORMAL"
+                      ? "#e0f2fe"
+                      : "#dcfce7";
+
+                  return (
+                    <Grid key={dept.department_key || dept.department_name} size={{ xs: 12, md: 6, lg: 3 }}>
+                      <Box
+                        sx={{
+                          p: 2.5,
+                          borderRadius: 2.5,
+                          border: "1px solid #e2e8f0",
+                          borderTop: `4px solid ${statusColor}`,
+                          backgroundColor: "#fafbfc",
+                          height: "100%",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 2,
+                        }}
+                      >
+                        <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                          <Box>
+                            <Typography variant="caption" color="text.secondary" fontWeight="bold" sx={{ textTransform: "uppercase" }}>
+                              Department
+                            </Typography>
+                            <Typography variant="h6" fontWeight="bold">
+                              {getDepartmentDisplayName(dept.department_name)}
+                            </Typography>
+                          </Box>
+                          <Box
+                            sx={{
+                              px: 1.2,
+                              py: 0.4,
+                              borderRadius: 1.5,
+                              backgroundColor: statusBg,
+                              color: statusColor,
+                              fontSize: "0.75rem",
+                              fontWeight: "bold",
+                            }}
+                          >
+                            {status}
+                          </Box>
+                        </Box>
+
+                        <Box sx={{ p: 1.5, borderRadius: 2, backgroundColor: "#ffffff", border: "1px solid #e2e8f0" }}>
+                          <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 0.5 }}>
+                            <Typography variant="caption" fontWeight="600" color="text.secondary">
+                              ESTIMATED WAIT
+                            </Typography>
+                            <Typography variant="caption" sx={{ fontSize: "0.65rem", px: 0.8, py: 0.2, bgcolor: "#f1f5f9", borderRadius: 1 }}>
+                              ESTIMATE
+                            </Typography>
+                          </Box>
+                          <Typography variant="h5" fontWeight="bold" sx={{ color: "#0f172a" }}>
+                            {dept.predicted_wait_formatted}
+                          </Typography>
+                          {dept.status_reason && (
+                            <Typography variant="caption" color="error" sx={{ display: "block", mt: 0.5 }}>
+                              {dept.status_reason}
+                            </Typography>
+                          )}
+                        </Box>
+
+                        <Grid container spacing={1}>
+                          <Grid size={{ xs: 6 }}>
+                            <Box sx={{ p: 1, bgcolor: "#ffffff", borderRadius: 1.5, border: "1px solid #f1f5f9" }}>
+                              <Typography variant="caption" color="text.secondary" sx={{ display: "block", fontSize: "0.7rem" }}>
+                                CURRENT QUEUE
+                              </Typography>
+                              <Typography variant="body1" fontWeight="bold">
+                                {dept.waiting_count}
+                              </Typography>
+                            </Box>
+                          </Grid>
+                          <Grid size={{ xs: 6 }}>
+                            <Box sx={{ p: 1, bgcolor: "#ffffff", borderRadius: 1.5, border: "1px solid #f1f5f9" }}>
+                              <Typography variant="caption" color="text.secondary" sx={{ display: "block", fontSize: "0.7rem" }}>
+                                ACTIVE WINDOWS
+                              </Typography>
+                              <Typography variant="body1" fontWeight="bold">
+                                {dept.active_windows}
+                              </Typography>
+                            </Box>
+                          </Grid>
+                          <Grid size={{ xs: 6 }}>
+                            <Box sx={{ p: 1, bgcolor: "#ffffff", borderRadius: 1.5, border: "1px solid #f1f5f9" }}>
+                              <Typography variant="caption" color="text.secondary" sx={{ display: "block", fontSize: "0.7rem" }}>
+                                AVG. SERVICE
+                              </Typography>
+                              <Typography variant="body1" fontWeight="bold">
+                                {dept.average_service_time_minutes !== null ? `${dept.average_service_time_minutes} min` : "N/A"}
+                              </Typography>
+                            </Box>
+                          </Grid>
+                          <Grid size={{ xs: 6 }}>
+                            <Box sx={{ p: 1, bgcolor: "#ffffff", borderRadius: 1.5, border: "1px solid #f1f5f9" }}>
+                              <Typography variant="caption" color="text.secondary" sx={{ display: "block", fontSize: "0.7rem" }}>
+                                QUEUE STATUS
+                              </Typography>
+                              <Typography variant="body1" fontWeight="bold" sx={{ color: statusColor }}>
+                                {status}
+                              </Typography>
+                            </Box>
+                          </Grid>
+                        </Grid>
+                      </Box>
+                    </Grid>
+                  );
+                })
+              ) : (
+                <Grid size={{ xs: 12 }}>
+                  <Typography color="text.secondary" align="center" sx={{ py: 3 }}>
+                    Calculating waiting time predictions...
+                  </Typography>
+                </Grid>
+              )}
+            </Grid>
+          </Box>
+        </Box>
 
       </Box>
 

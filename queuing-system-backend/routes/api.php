@@ -13,6 +13,7 @@ use App\Http\Controllers\Api\ReportController;
 use App\Http\Controllers\Api\WindowController;
 use App\Http\Controllers\Api\ActivityLogController;
 use App\Http\Controllers\Api\StudentController;
+use App\Http\Controllers\Api\IntelligenceController;
 
 Route::get('/health/database', function () {
     $database = env('DB_DATABASE', 'laravel');
@@ -94,4 +95,7 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\EnsureDepartmentEnabled:
 
     // Customers Served Per Day
     Route::get('/analytics/customers-served', [CustomersServedController::class, 'index']);
+
+    // Intelligence & Predictions
+    Route::get('/intelligence/predicted-wait', [IntelligenceController::class, 'getPredictedWaitTime']);
 });

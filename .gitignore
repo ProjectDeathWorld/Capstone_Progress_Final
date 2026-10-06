@@ -28,8 +28,11 @@ public/hot/
 storage/logs/*.log
 **/storage/logs/*.log
 storage/framework/cache/*
+**/storage/framework/cache/*
 storage/framework/sessions/*
+**/storage/framework/sessions/*
 storage/framework/views/*
+**/storage/framework/views/*
 !storage/framework/.gitignore
 !**/storage/framework/.gitignore
 

@@ -341,6 +341,13 @@ export async function getTransactionAnalytics(period = 'today', startDate = null
   return fetchJson(url, { headers: getHeaders(true), signal }, ANALYTICS_TIMEOUT_MS);
 }
 
+// ─── Intelligence & Predictions ──────────────────────
+export async function getPredictedWaitTimes(department = null, signal = null) {
+  let url = `${API_BASE}/intelligence/predicted-wait`;
+  if (department) url += `?department=${encodeURIComponent(department)}`;
+  return fetchJson(url, { headers: getHeaders(true), signal });
+}
+
 // ─── Window Availability ─────────────────────────────
 export async function getWindowAvailability(signal = null) {
   const data = await fetchJson(`${API_BASE}/windows/availability`, {

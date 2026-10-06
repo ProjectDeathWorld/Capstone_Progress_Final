@@ -6,7 +6,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useDisplayBoardData } from '../hooks/useDisplayBoardData'
 import CalendarDateRange from '../components/CalendarDateRange'
-import { getStaffList, registerUser, updateStaff, deleteStaff, getServiceWindows, getDashboardAnalytics, getBusiestDayAnalytics, getDepartmentComparison, getPeakHours, getCustomersServed, getMonitoringData, getActivityLogs, getQueueHistory, getDisplayConfiguration, publishDisplayConfiguration, logout as apiLogout } from '../api'
+import { getStaffList, registerUser, updateStaff, deleteStaff, getServiceWindows, getDashboardAnalytics, getBusiestDayAnalytics, getDepartmentComparison, getPeakHours, getCustomersServed, getMonitoringData, getActivityLogs, getQueueHistory, getDisplayConfiguration, publishDisplayConfiguration, getPredictedWaitTimes, logout as apiLogout } from '../api'
 import { DEFAULT_ANNOUNCEMENT_BACKGROUND_COLOR, DEFAULT_ANNOUNCEMENT_TEXT_COLOR, DEFAULT_DATE_TIME_TEXT_COLOR, DEFAULT_DISPLAY_BACKGROUND_COLOR, DEFAULT_DISPLAY_PANEL_COLORS, DEFAULT_NOW_SERVING_BACKGROUND_COLOR, DEFAULT_NOW_SERVING_TEXT_COLOR, DEFAULT_WAITING_QUEUE_COLORS, DEFAULT_WINDOW_TICKET_TEXT_COLOR, DISPLAY_FONT_OPTIONS, DISPLAY_LAYOUT_OPTIONS, DISPLAY_TEXT_SIZE_OPTIONS, ELEMENT_FONT_SIZE_OPTIONS, ELEMENT_FONT_WEIGHT_OPTIONS, DISPLAY_FONT_ELEMENTS, DEFAULT_DISPLAY_FONT_CONTROLS, getColorContrastRatio, getDefaultDisplayBoardConfig, getDisplayBoardConfig, getDisplayWindowOptions, saveDisplayBoardConfig } from '../utils/displayBoardConfig'
 // TODO: fix these import paths to match where these components actually live in your project
 import Analytics from './Analytics'
@@ -448,6 +448,9 @@ function AdminPanel({ user, initialPage = 'dashboard' }) {
   const [selectedEndDate, setSelectedEndDate] = useState(todayIso)
   const [dashboardLoading, setDashboardLoading] = useState(false)
   const [dashboardError, setDashboardError] = useState('')
+  const [predictions, setPredictions] = useState([])
+  const [predictionsLoading, setPredictionsLoading] = useState(false)
+  const [predictionsError, setPredictionsError] = useState('')
   const dashboardRequestInFlightRef = useRef(false)
   const dashboardAnalyticsInFlightRef = useRef(false)
   const dashboardMountedRef = useRef(true)
@@ -513,6 +516,7 @@ function AdminPanel({ user, initialPage = 'dashboard' }) {
       const requests = [
         () => getDashboardAnalytics(period, startDate, endDate, isDeptAdmin ? userDeptName : null, signal),
         () => getMonitoringData(isDeptAdmin ? userDeptName : null, signal),
+        () => getPredictedWaitTimes(isDeptAdmin ? userDeptName : null, signal),
       ]
       // A synchronous request setup failure should not prevent the other live
       // dashboard responses from being applied.
@@ -525,8 +529,16 @@ function AdminPanel({ user, initialPage = 'dashboard' }) {
       const valueOf = (index) => results[index].status === 'fulfilled' ? results[index].value : null
       const dashData = valueOf(0)
       const monitoringData = valueOf(1)
+      const predictionData = valueOf(2)
       if (Array.isArray(monitoringData)) setQueueWindows(previous => retainEqual(previous, normalizeMonitoringWindows(monitoringData)))
       if (dashData && typeof dashData === 'object') setAnalytics(previous => retainEqual(previous, dashData))
+      if (predictionData && (Array.isArray(predictionData?.predictions) || Array.isArray(predictionData?.data))) {
+        const list = Array.isArray(predictionData.predictions) ? predictionData.predictions : predictionData.data
+        setPredictions(previous => retainEqual(previous, list))
+        setPredictionsError('')
+      } else if (results[2].status === 'rejected') {
+        setPredictionsError('Failed to load predictions')
+      }
       if (Array.isArray(monitoringData)) {
         setCashierWaiting(monitoringData.find(row => row.department === 'Cashier')?.department_waiting ?? 0)
         setRegistrarWaiting(monitoringData.find(row => row.department === 'Registrar')?.department_waiting ?? 0)
@@ -2085,6 +2097,114 @@ function AdminPanel({ user, initialPage = 'dashboard' }) {
                 ) : (
                   <div className="empty-state">No active alerts. Queue system is operating normally.</div>
                 )}
+              </article>
+            </section>
+
+            {/* INTELLIGENCE SECTION */}
+            <section className="intelligence-section">
+              <div className="intelligence-section-header">
+                <div className="intelligence-header-copy">
+                  <div className="intelligence-badge-pill">
+                    <span className="intelligence-pulse-beacon" />
+                    <span>SYSTEM INTELLIGENCE</span>
+                  </div>
+                  <h2 className="dashboard-panel-title intelligence-heading">INTELLIGENCE</h2>
+                  <p className="intelligence-subheading">
+                    Algorithmic queue analytics and dynamic operational forecasts.
+                  </p>
+                </div>
+              </div>
+
+              <article className="intelligence-card-panel">
+                <div className="intelligence-panel-header">
+                  <div className="intelligence-title-cluster">
+                    <div className="intelligence-icon-avatar">
+                      <span className="material-symbols-outlined">hourglass_top</span>
+                    </div>
+                    <div>
+                      <h3 className="intelligence-panel-title">Predicted Waiting Time</h3>
+                      <p className="intelligence-panel-subtitle">
+                        Estimates how long a student/customer will likely wait before being served based on the current queue and historical service performance.
+                      </p>
+                    </div>
+                  </div>
+                  <span className="intelligence-live-badge">
+                    <span className="material-symbols-outlined">bolt</span>
+                    Real-time Prediction
+                  </span>
+                </div>
+
+                <div className="intelligence-departments-grid">
+                  {predictions && predictions.length > 0 ? (
+                    predictions.map((dept) => {
+                      const status = String(dept.queue_status || 'LOW').toUpperCase();
+                      const statusKey = status === 'CRITICAL' ? 'critical' : status === 'HIGH' ? 'high' : status === 'NORMAL' ? 'normal' : 'low';
+                      const deptName = getDepartmentDisplayName(dept.department_name);
+
+                      return (
+                        <div key={dept.department_key || dept.department_name} className={`intelligence-dept-card status-${statusKey}`}>
+                          <div className="dept-card-header">
+                            <div>
+                              <span className="dept-card-sublabel">Department</span>
+                              <h4 className="dept-card-title">{deptName}</h4>
+                            </div>
+                            <span className={`intelligence-status-pill status-${statusKey}`}>
+                              {status}
+                            </span>
+                          </div>
+
+                          <div className="dept-prediction-hero">
+                            <div className="dept-prediction-header-line">
+                              <span className="dept-prediction-caption">Predicted Waiting Time</span>
+                              <span className="dept-prediction-estimate-badge">Estimate</span>
+                            </div>
+                            <div className="dept-prediction-value">
+                              {dept.predicted_wait_formatted}
+                            </div>
+                            {dept.status_reason && (
+                              <div className="dept-prediction-reason">
+                                <span className="material-symbols-outlined">info</span>
+                                <span>{dept.status_reason}</span>
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="dept-metrics-table">
+                            <div className="dept-metric-box">
+                              <span className="metric-box-label">Current Queue</span>
+                              <strong className="metric-box-val">{dept.waiting_count}</strong>
+                              <span className="metric-box-hint">waiting</span>
+                            </div>
+                            <div className="dept-metric-box">
+                              <span className="metric-box-label">Active Windows</span>
+                              <strong className="metric-box-val">{dept.active_windows}</strong>
+                              <span className="metric-box-hint">{dept.active_windows === 1 ? 'window open' : 'windows open'}</span>
+                            </div>
+                            <div className="dept-metric-box">
+                              <span className="metric-box-label">Average Service Time</span>
+                              <strong className="metric-box-val">
+                                {dept.average_service_time_minutes !== null ? `${dept.average_service_time_minutes} min` : 'N/A'}
+                              </strong>
+                              <span className="metric-box-hint">
+                                {dept.data_source === 'today' ? "today's completed" : dept.data_source === 'recent_history' ? 'recent history' : dept.data_source === 'all_history' ? 'historical records' : 'no data'}
+                              </span>
+                            </div>
+                            <div className="dept-metric-box">
+                              <span className="metric-box-label">Queue Status</span>
+                              <strong className={`metric-box-val status-text-${statusKey}`}>{status}</strong>
+                              <span className="metric-box-hint">traffic level</span>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="intelligence-loading-state">
+                      <span className="material-symbols-outlined intelligence-spinner-icon">sync</span>
+                      <p>Calculating live department predictions...</p>
+                    </div>
+                  )}
+                </div>
               </article>
             </section>
           </div>
