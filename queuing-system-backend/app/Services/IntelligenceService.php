@@ -19,6 +19,37 @@ class IntelligenceService
     ];
 
     /**
+     * Smart Congestion Score Weights (Sum = 1.00)
+     */
+    public const CONGESTION_WEIGHTS = [
+        'predicted_wait' => 0.30,
+        'queue_length' => 0.25,
+        'rate_ratio' => 0.25,
+        'queue_trend' => 0.10,
+        'peak_condition' => 0.10,
+    ];
+
+    /**
+     * Congestion Score Thresholds (0-100 scale)
+     */
+    public const CONGESTION_SCORE_THRESHOLDS = [
+        'LOW' => 24,       // 0–24: LOW
+        'NORMAL' => 49,    // 25–49: NORMAL
+        'HIGH' => 74,      // 50–74: HIGH
+        'CRITICAL' => 100, // 75–100: CRITICAL
+    ];
+
+    /**
+     * Queue Length Score Thresholds
+     */
+    public const CONGESTION_QUEUE_THRESHOLDS = [
+        'LOW' => 5,        // 0–5
+        'NORMAL' => 15,    // 6–15
+        'HIGH' => 25,      // 16–25
+    ];
+
+
+    /**
      * Get list of active/existing departments in the system.
      */
     public function getActiveDepartments(): array
@@ -581,4 +612,360 @@ class IntelligenceService
             'is_available' => false,
         ];
     }
+
+    /**
+     * Determine Congestion Risk Level from Risk Score (0-100).
+     */
+    public static function determineCongestionRiskLevel(int $riskScore): string
+    {
+        if ($riskScore <= self::CONGESTION_SCORE_THRESHOLDS['LOW']) {
+            return 'LOW';
+        }
+        if ($riskScore <= self::CONGESTION_SCORE_THRESHOLDS['NORMAL']) {
+            return 'NORMAL';
+        }
+        if ($riskScore <= self::CONGESTION_SCORE_THRESHOLDS['HIGH']) {
+            return 'HIGH';
+        }
+        return 'CRITICAL';
+    }
+
+    /**
+     * Generate dynamic human-readable explanation based on real factors.
+     */
+    public static function generateCongestionReason(
+        string $riskLevel,
+        int $waitingCount,
+        int $activeWindows,
+        ?float $predictedWaitMinutes,
+        int $arrivalCount,
+        int $serviceCount,
+        string $queueTrend,
+        bool $peakApproaching,
+        string $departmentName
+    ): string {
+        if ($waitingCount === 0) {
+            return 'Queue is clear with no customers currently waiting.';
+        }
+
+        if ($activeWindows === 0 && $waitingCount > 0) {
+            return "No active service windows are available while {$waitingCount} customers are waiting in queue.";
+        }
+
+        if ($riskLevel === 'CRITICAL') {
+            if ($arrivalCount > $serviceCount && $predictedWaitMinutes !== null && $predictedWaitMinutes > 30) {
+                return 'Customers are entering the queue faster than they are being served, and predicted waiting time is above 30 minutes.';
+            }
+            if ($predictedWaitMinutes !== null && $predictedWaitMinutes > 30 && $activeWindows <= 1) {
+                return "Predicted waiting time has exceeded 30 minutes and only {$activeWindows} service window is active.";
+            }
+            if ($arrivalCount > $serviceCount && $peakApproaching) {
+                return 'Arrival rate is significantly higher than current service rate, and the department is approaching its expected peak hour.';
+            }
+            if ($predictedWaitMinutes !== null && $predictedWaitMinutes > 30) {
+                return 'Predicted waiting time is critically high relative to available service window capacity.';
+            }
+            return 'Queue demand is critically exceeding active window service capacity.';
+        }
+
+        if ($riskLevel === 'HIGH') {
+            if ($queueTrend === 'INCREASING' || $queueTrend === 'RAPIDLY INCREASING') {
+                return 'Queue size and waiting time are increasing while service capacity is limited.';
+            }
+            if ($peakApproaching) {
+                return 'Current queue is elevated and the department is approaching its predicted peak hour.';
+            }
+            if ($arrivalCount > $serviceCount) {
+                return 'Customers are entering the queue faster than they are being served.';
+            }
+            return 'Queue volume is elevated relative to current window capacity.';
+        }
+
+        if ($riskLevel === 'NORMAL') {
+            if ($serviceCount >= $arrivalCount) {
+                return 'Current service capacity is keeping up with incoming customers.';
+            }
+            return 'Queue traffic is moderate and currently manageable under standard operations.';
+        }
+
+        // LOW
+        if ($serviceCount >= $arrivalCount && $waitingCount > 0) {
+            return 'Service rate is keeping up with arrivals and waiting time remains low.';
+        }
+        return 'Queue is manageable and service capacity is sufficient.';
+    }
+
+    /**
+     * Generate operational recommended action based on risk level and window count.
+     */
+    public static function generateRecommendedAction(string $riskLevel, int $activeWindows, string $departmentName): string
+    {
+        if ($riskLevel === 'LOW') {
+            return 'No action needed. Continue monitoring.';
+        }
+        if ($riskLevel === 'NORMAL') {
+            return 'Continue current operations and monitor queue growth.';
+        }
+        if ($riskLevel === 'HIGH') {
+            return ($activeWindows <= 1)
+                ? "Consider preparing or activating an additional {$departmentName} service window."
+                : 'Monitor queue velocity and prepare an additional service window if demand continues increasing.';
+        }
+
+        // CRITICAL
+        return ($activeWindows === 0)
+            ? "Immediately open and assign staff to a {$departmentName} service window."
+            : "Consider opening an additional {$departmentName} service window or assigning available staff immediately.";
+    }
+
+    /**
+     * Calculate Smart Queue Congestion Risk for a department.
+     * Evaluates queue length, predicted waiting time, arrival vs service rate,
+     * queue growth trend, active windows, and peak hour forecast.
+     */
+    public function getDepartmentCongestionRisk(string $departmentName, ?Carbon $now = null): array
+    {
+        $now = $now ? $now->copy() : Carbon::now();
+        $normalizedName = Departments::name($departmentName) ?? $departmentName;
+        $types = Departments::types($normalizedName);
+
+        // 1. Reuse existing Predicted Waiting Time intelligence
+        $waitPrediction = $this->getDepartmentPrediction($normalizedName);
+        $waitingCount = (int) ($waitPrediction['waiting_count'] ?? 0);
+        $activeWindows = (int) ($waitPrediction['active_windows'] ?? 0);
+        $predictedWaitMinutes = $waitPrediction['predicted_wait_minutes'] ?? null;
+
+        // 2. Reuse existing Peak Hour Prediction intelligence
+        $peakPrediction = $this->getDepartmentPeakPrediction($normalizedName, $now);
+
+        // 3. Current Arrival Rate & Service Rate (past 60 minutes)
+        $windowStart = $now->copy()->subMinutes(60);
+        $arrivalCount = 0;
+        $serviceCount = 0;
+
+        if (!empty($types)) {
+            $arrivalCount = (int) QueueTicket::query()
+                ->whereIn('service_type', $types)
+                ->whereBetween('created_at', [$windowStart, $now])
+                ->count();
+
+            $serviceCount = (int) QueueTicket::query()
+                ->whereIn('service_type', $types)
+                ->whereIn('status', ['done', 'Completed', 'completed'])
+                ->where(function ($q) use ($windowStart, $now) {
+                    $q->whereBetween('completed_at', [$windowStart, $now])
+                      ->orWhere(function ($sub) use ($windowStart, $now) {
+                          $sub->whereNull('completed_at')
+                              ->whereBetween('created_at', [$windowStart, $now]);
+                      });
+                })
+                ->count();
+        }
+
+        // 4. Queue Growth Trend (past 30 minutes net change)
+        $t30Start = $now->copy()->subMinutes(30);
+        $arrivals30m = 0;
+        $completions30m = 0;
+        if (!empty($types)) {
+            $arrivals30m = (int) QueueTicket::query()
+                ->whereIn('service_type', $types)
+                ->whereBetween('created_at', [$t30Start, $now])
+                ->count();
+
+            $completions30m = (int) QueueTicket::query()
+                ->whereIn('service_type', $types)
+                ->whereIn('status', ['done', 'Completed', 'completed'])
+                ->where(function ($q) use ($t30Start, $now) {
+                    $q->whereBetween('completed_at', [$t30Start, $now])
+                      ->orWhere(function ($sub) use ($t30Start, $now) {
+                          $sub->whereNull('completed_at')
+                              ->whereBetween('created_at', [$t30Start, $now]);
+                      });
+                })
+                ->count();
+        }
+
+        $netChange = $arrivals30m - $completions30m;
+        if ($waitingCount === 0) {
+            $queueTrend = 'STABLE';
+            $trendScore = 10.0;
+        } elseif ($netChange <= -2) {
+            $queueTrend = 'DECREASING';
+            $trendScore = 15.0;
+        } elseif ($netChange >= -1 && $netChange <= 1) {
+            $queueTrend = 'STABLE';
+            $trendScore = 30.0;
+        } elseif ($netChange >= 2 && $netChange <= 5) {
+            $queueTrend = 'INCREASING';
+            $trendScore = 70.0;
+        } else {
+            $queueTrend = 'RAPIDLY INCREASING';
+            $trendScore = 95.0;
+        }
+
+        // 5. Factor 1: Predicted Wait Time Score (30% weight)
+        if ($predictedWaitMinutes === null) {
+            $waitScore = ($waitingCount > 0 && $activeWindows === 0) ? 100.0 : 0.0;
+        } elseif ($predictedWaitMinutes < 10) {
+            $waitScore = min(24.0, ($predictedWaitMinutes / 10.0) * 24.0);
+        } elseif ($predictedWaitMinutes <= 20) {
+            $waitScore = 25.0 + (($predictedWaitMinutes - 10.0) / 10.0) * 24.0;
+        } elseif ($predictedWaitMinutes <= 30) {
+            $waitScore = 50.0 + (($predictedWaitMinutes - 20.0) / 10.0) * 24.0;
+        } else {
+            $waitScore = min(100.0, 75.0 + (($predictedWaitMinutes - 30.0) / 30.0) * 25.0);
+        }
+
+        // Factor 2: Queue Length Score (25% weight)
+        if ($waitingCount === 0) {
+            $queueScore = 0.0;
+        } elseif ($waitingCount <= self::CONGESTION_QUEUE_THRESHOLDS['LOW']) {
+            $queueScore = 10.0 + ($waitingCount / 5.0) * 14.0;
+        } elseif ($waitingCount <= self::CONGESTION_QUEUE_THRESHOLDS['NORMAL']) {
+            $queueScore = 25.0 + (($waitingCount - 5.0) / 10.0) * 24.0;
+        } elseif ($waitingCount <= self::CONGESTION_QUEUE_THRESHOLDS['HIGH']) {
+            $queueScore = 50.0 + (($waitingCount - 15.0) / 10.0) * 24.0;
+        } else {
+            $queueScore = min(100.0, 75.0 + (($waitingCount - 25.0) / 15.0) * 25.0);
+        }
+
+        // Factor 3: Arrival vs Service Rate Score (25% weight)
+        if ($waitingCount > 0 && $activeWindows === 0) {
+            $rateScore = 100.0;
+        } elseif ($arrivalCount === 0 && $serviceCount === 0) {
+            $rateScore = ($waitingCount > 0) ? 35.0 : 0.0;
+        } elseif ($serviceCount >= $arrivalCount) {
+            $ratio = $arrivalCount / max(1, $serviceCount);
+            $rateScore = max(10.0, min(35.0, $ratio * 30.0));
+        } else {
+            $diff = $arrivalCount - $serviceCount;
+            $ratio = $arrivalCount / max(1, $serviceCount);
+            if ($diff >= 8 || $ratio >= 2.0) {
+                $rateScore = min(100.0, 80.0 + ($diff * 2.0));
+            } elseif ($diff >= 4 || $ratio >= 1.5) {
+                $rateScore = 65.0 + ($diff * 2.0);
+            } else {
+                $rateScore = 50.0 + ($diff * 3.0);
+            }
+        }
+
+        // Factor 5: Peak Condition Score (10% weight)
+        $peakApproaching = false;
+        $currentHour = (int) $now->format('G');
+        if (!empty($peakPrediction['is_available']) && !empty($peakPrediction['is_upcoming'])) {
+            $peakStart = $peakPrediction['predicted_peak_start'] ?? null;
+            $peakHour = $peakStart ? (int) substr($peakStart, 0, 2) : null;
+            if ($peakHour !== null) {
+                if ($currentHour === $peakHour) {
+                    $peakApproaching = true;
+                    $peakScore = 90.0;
+                } elseif ($currentHour === $peakHour - 1) {
+                    $peakApproaching = true;
+                    $peakScore = 80.0;
+                } elseif ($currentHour < $peakHour) {
+                    $peakScore = 40.0;
+                } else {
+                    $peakScore = 20.0;
+                }
+            } else {
+                $peakScore = 20.0;
+            }
+        } else {
+            $peakScore = 15.0;
+        }
+
+        // Compute Weighted Congestion Score (0–100)
+        $rawScore = ($waitScore * self::CONGESTION_WEIGHTS['predicted_wait'])
+            + ($queueScore * self::CONGESTION_WEIGHTS['queue_length'])
+            + ($rateScore * self::CONGESTION_WEIGHTS['rate_ratio'])
+            + ($trendScore * self::CONGESTION_WEIGHTS['queue_trend'])
+            + ($peakScore * self::CONGESTION_WEIGHTS['peak_condition']);
+
+        $riskScore = (int) round($rawScore);
+
+        // Edge case adjustments
+        if ($waitingCount === 0) {
+            $riskScore = min(15, $riskScore);
+        } elseif ($activeWindows === 0 && $waitingCount > 0) {
+            $riskScore = max(85, $riskScore);
+        }
+        $riskScore = max(0, min(100, $riskScore));
+
+        // Determine Risk Level
+        $riskLevel = self::determineCongestionRiskLevel($riskScore);
+
+        // Generate Explanation Reason
+        $reason = self::generateCongestionReason(
+            $riskLevel,
+            $waitingCount,
+            $activeWindows,
+            $predictedWaitMinutes,
+            $arrivalCount,
+            $serviceCount,
+            $queueTrend,
+            $peakApproaching,
+            $normalizedName
+        );
+
+        // Generate Recommended Action
+        $recommendedAction = self::generateRecommendedAction($riskLevel, $activeWindows, $normalizedName);
+
+        return [
+            'department_key' => strtolower($normalizedName),
+            'department_name' => $normalizedName,
+            'risk_score' => $riskScore,
+            'risk_level' => $riskLevel,
+            'waiting_count' => $waitingCount,
+            'active_windows' => $activeWindows,
+            'predicted_wait_minutes' => $waitPrediction['predicted_wait_minutes'] ?? null,
+            'predicted_wait_min' => $waitPrediction['predicted_wait_min'] ?? null,
+            'predicted_wait_max' => $waitPrediction['predicted_wait_max'] ?? null,
+            'predicted_wait_formatted' => $waitPrediction['predicted_wait_formatted'] ?? 'Unavailable',
+            'arrival_rate_per_hour' => $arrivalCount,
+            'service_rate_per_hour' => $serviceCount,
+            'queue_trend' => $queueTrend,
+            'peak_period_approaching' => $peakApproaching,
+            'predicted_peak_formatted' => $peakPrediction['predicted_peak_formatted'] ?? null,
+            'reason' => $reason,
+            'recommended_action' => $recommendedAction,
+            'is_available' => true,
+            'factors' => [
+                'wait_score' => round($waitScore, 1),
+                'queue_score' => round($queueScore, 1),
+                'rate_score' => round($rateScore, 1),
+                'trend_score' => round($trendScore, 1),
+                'peak_score' => round($peakScore, 1),
+            ],
+            'congestion' => [
+                'risk_score' => $riskScore,
+                'risk_level' => $riskLevel,
+                'waiting_count' => $waitingCount,
+                'active_windows' => $activeWindows,
+                'predicted_wait_min' => $waitPrediction['predicted_wait_min'] ?? null,
+                'predicted_wait_max' => $waitPrediction['predicted_wait_max'] ?? null,
+                'predicted_wait_formatted' => $waitPrediction['predicted_wait_formatted'] ?? 'Unavailable',
+                'arrival_rate_per_hour' => $arrivalCount,
+                'service_rate_per_hour' => $serviceCount,
+                'queue_trend' => $queueTrend,
+                'peak_period_approaching' => $peakApproaching,
+                'predicted_peak_formatted' => $peakPrediction['predicted_peak_formatted'] ?? null,
+                'reason' => $reason,
+                'recommended_action' => $recommendedAction,
+            ],
+        ];
+    }
+
+    /**
+     * Get Smart Congestion Risk predictions for multiple departments.
+     */
+    public function getAllDepartmentCongestionRisks(?array $departmentNames = null, ?Carbon $now = null): array
+    {
+        $departments = $departmentNames ?: $this->getActiveDepartments();
+        $results = [];
+        foreach ($departments as $dept) {
+            $results[] = $this->getDepartmentCongestionRisk($dept, $now);
+        }
+        return $results;
+    }
 }
+

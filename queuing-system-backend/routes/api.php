@@ -99,4 +99,6 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\EnsureDepartmentEnabled:
     // Intelligence & Predictions
     Route::get('/intelligence/predicted-wait', [IntelligenceController::class, 'getPredictedWaitTime']);
     Route::get('/intelligence/peak-hours', [IntelligenceController::class, 'getPeakHoursPrediction']);
+    Route::get('/intelligence/congestion-risk', [IntelligenceController::class, 'getCongestionRisk']);
 });
+

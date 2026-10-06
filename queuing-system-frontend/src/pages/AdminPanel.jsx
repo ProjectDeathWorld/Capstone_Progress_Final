@@ -6,7 +6,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useDisplayBoardData } from '../hooks/useDisplayBoardData'
 import CalendarDateRange from '../components/CalendarDateRange'
-import { getStaffList, registerUser, updateStaff, deleteStaff, getServiceWindows, getDashboardAnalytics, getBusiestDayAnalytics, getDepartmentComparison, getPeakHours, getCustomersServed, getMonitoringData, getActivityLogs, getQueueHistory, getDisplayConfiguration, publishDisplayConfiguration, getPredictedWaitTimes, getPeakHourPredictions, logout as apiLogout } from '../api'
+import { getStaffList, registerUser, updateStaff, deleteStaff, getServiceWindows, getDashboardAnalytics, getBusiestDayAnalytics, getDepartmentComparison, getPeakHours, getCustomersServed, getMonitoringData, getActivityLogs, getQueueHistory, getDisplayConfiguration, publishDisplayConfiguration, getPredictedWaitTimes, getPeakHourPredictions, getCongestionRisks, logout as apiLogout } from '../api'
 import { DEFAULT_ANNOUNCEMENT_BACKGROUND_COLOR, DEFAULT_ANNOUNCEMENT_TEXT_COLOR, DEFAULT_DATE_TIME_TEXT_COLOR, DEFAULT_DISPLAY_BACKGROUND_COLOR, DEFAULT_DISPLAY_PANEL_COLORS, DEFAULT_NOW_SERVING_BACKGROUND_COLOR, DEFAULT_NOW_SERVING_TEXT_COLOR, DEFAULT_WAITING_QUEUE_COLORS, DEFAULT_WINDOW_TICKET_TEXT_COLOR, DISPLAY_FONT_OPTIONS, DISPLAY_LAYOUT_OPTIONS, DISPLAY_TEXT_SIZE_OPTIONS, ELEMENT_FONT_SIZE_OPTIONS, ELEMENT_FONT_WEIGHT_OPTIONS, DISPLAY_FONT_ELEMENTS, DEFAULT_DISPLAY_FONT_CONTROLS, getColorContrastRatio, getDefaultDisplayBoardConfig, getDisplayBoardConfig, getDisplayWindowOptions, saveDisplayBoardConfig } from '../utils/displayBoardConfig'
 // TODO: fix these import paths to match where these components actually live in your project
 import Analytics from './Analytics'
@@ -454,6 +454,9 @@ function AdminPanel({ user, initialPage = 'dashboard' }) {
   const [peakPredictions, setPeakPredictions] = useState([])
   const [peakPredictionsLoading, setPeakPredictionsLoading] = useState(false)
   const [peakPredictionsError, setPeakPredictionsError] = useState('')
+  const [congestionRisks, setCongestionRisks] = useState([])
+  const [congestionLoading, setCongestionLoading] = useState(false)
+  const [congestionError, setCongestionError] = useState('')
   const dashboardRequestInFlightRef = useRef(false)
   const dashboardAnalyticsInFlightRef = useRef(false)
   const dashboardMountedRef = useRef(true)
@@ -521,6 +524,7 @@ function AdminPanel({ user, initialPage = 'dashboard' }) {
         () => getMonitoringData(isDeptAdmin ? userDeptName : null, signal),
         () => getPredictedWaitTimes(isDeptAdmin ? userDeptName : null, signal),
         () => getPeakHourPredictions(isDeptAdmin ? userDeptName : null, signal),
+        () => getCongestionRisks(isDeptAdmin ? userDeptName : null, signal),
       ]
       // A synchronous request setup failure should not prevent the other live
       // dashboard responses from being applied.
@@ -535,6 +539,7 @@ function AdminPanel({ user, initialPage = 'dashboard' }) {
       const monitoringData = valueOf(1)
       const predictionData = valueOf(2)
       const peakData = valueOf(3)
+      const congestionData = valueOf(4)
       if (Array.isArray(monitoringData)) setQueueWindows(previous => retainEqual(previous, normalizeMonitoringWindows(monitoringData)))
       if (dashData && typeof dashData === 'object') setAnalytics(previous => retainEqual(previous, dashData))
       if (predictionData && (Array.isArray(predictionData?.predictions) || Array.isArray(predictionData?.data))) {
@@ -552,6 +557,15 @@ function AdminPanel({ user, initialPage = 'dashboard' }) {
         setPeakPredictionsError('')
       } else if (results[3]?.status === 'rejected') {
         setPeakPredictionsError('Failed to load peak predictions')
+      }
+      if (congestionData && (Array.isArray(congestionData?.congestion_predictions) || Array.isArray(congestionData?.predictions) || Array.isArray(congestionData?.data))) {
+        const congList = Array.isArray(congestionData.congestion_predictions)
+          ? congestionData.congestion_predictions
+          : (Array.isArray(congestionData.predictions) ? congestionData.predictions : congestionData.data)
+        setCongestionRisks(previous => retainEqual(previous, congList))
+        setCongestionError('')
+      } else if (results[4]?.status === 'rejected') {
+        setCongestionError('Failed to load congestion risk data')
       }
       if (Array.isArray(monitoringData)) {
         setCashierWaiting(monitoringData.find(row => row.department === 'Cashier')?.department_waiting ?? 0)
@@ -2309,6 +2323,136 @@ function AdminPanel({ user, initialPage = 'dashboard' }) {
                     <div className="intelligence-loading-state">
                       <span className="material-symbols-outlined intelligence-spinner-icon">sync</span>
                       <p>Calculating peak hour predictions...</p>
+                    </div>
+                  )}
+                </div>
+              </article>
+
+              <article className="intelligence-card-panel congestion-prediction-panel">
+                <div className="intelligence-panel-header">
+                  <div className="intelligence-title-cluster">
+                    <div className="intelligence-icon-avatar congestion-icon-avatar">
+                      <span className="material-symbols-outlined">warning</span>
+                    </div>
+                    <div>
+                      <h3 className="intelligence-panel-title">Smart Queue Congestion Risk</h3>
+                      <p className="intelligence-panel-subtitle">
+                        Multi-factor capacity analysis evaluating queue length, arrival velocity, service speed, active windows, and growth trends.
+                      </p>
+                    </div>
+                  </div>
+                  <span className="intelligence-live-badge congestion-forecast-badge">
+                    <span className="material-symbols-outlined">speed</span>
+                    Risk Assessment
+                  </span>
+                </div>
+
+                <div className="intelligence-departments-grid">
+                  {congestionRisks && congestionRisks.length > 0 ? (
+                    congestionRisks.map((dept) => {
+                      const risk = String(dept.risk_level || 'NORMAL').toUpperCase();
+                      const riskKey = risk === 'CRITICAL' ? 'critical' : risk === 'HIGH' ? 'high' : risk === 'NORMAL' ? 'normal' : 'low';
+                      const deptName = getDepartmentDisplayName(dept.department_name);
+                      const trend = dept.queue_trend || 'STABLE';
+                      const trendKey = trend.toLowerCase().replace(/\s+/g, '-');
+                      const score = dept.risk_score ?? 0;
+
+                      return (
+                        <div key={dept.department_key || dept.department_name} className={`intelligence-dept-card congestion-dept-card status-${riskKey}`}>
+                          <div className="dept-card-header">
+                            <div>
+                              <span className="dept-card-sublabel">Department</span>
+                              <h4 className="dept-card-title">{deptName}</h4>
+                            </div>
+                            <span className={`intelligence-status-pill congestion-risk-pill status-${riskKey}`}>
+                              {risk === 'CRITICAL' && '🔴 '}
+                              {risk === 'HIGH' && '🟠 '}
+                              {risk === 'NORMAL' && '🟡 '}
+                              {risk === 'LOW' && '🟢 '}
+                              {risk} RISK
+                            </span>
+                          </div>
+
+                          <div className="dept-prediction-hero congestion-hero">
+                            <div className="dept-prediction-header-line">
+                              <span className="dept-prediction-caption">Congestion Risk Score</span>
+                              <span className={`congestion-score-badge status-${riskKey}`}>
+                                {score} / 100
+                              </span>
+                            </div>
+                            <div className="congestion-score-bar-wrapper">
+                              <div
+                                className={`congestion-score-bar-fill status-${riskKey}`}
+                                style={{ width: `${Math.max(4, Math.min(100, score))}%` }}
+                              />
+                            </div>
+                            {dept.peak_period_approaching && (
+                              <div className="congestion-peak-alert">
+                                <span className="material-symbols-outlined">crisis_alert</span>
+                                <span>Peak period approaching{dept.predicted_peak_formatted ? ` (${dept.predicted_peak_formatted})` : ''} — risk elevated</span>
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="dept-metrics-table congestion-metrics-table">
+                            <div className="dept-metric-box">
+                              <span className="metric-box-label">Current Queue</span>
+                              <strong className="metric-box-val">{dept.waiting_count}</strong>
+                              <span className="metric-box-hint">waiting customers</span>
+                            </div>
+                            <div className="dept-metric-box">
+                              <span className="metric-box-label">Predicted Wait</span>
+                              <strong className="metric-box-val">{dept.predicted_wait_formatted || 'Unavailable'}</strong>
+                              <span className="metric-box-hint">estimated delay</span>
+                            </div>
+                            <div className="dept-metric-box">
+                              <span className="metric-box-label">Active Windows</span>
+                              <strong className="metric-box-val">{dept.active_windows}</strong>
+                              <span className="metric-box-hint">{dept.active_windows === 1 ? 'window open' : 'windows open'}</span>
+                            </div>
+                            <div className="dept-metric-box">
+                              <span className="metric-box-label">Arrival Rate</span>
+                              <strong className="metric-box-val">{dept.arrival_rate_per_hour}/hour</strong>
+                              <span className="metric-box-hint">incoming flow</span>
+                            </div>
+                            <div className="dept-metric-box">
+                              <span className="metric-box-label">Service Rate</span>
+                              <strong className="metric-box-val">{dept.service_rate_per_hour}/hour</strong>
+                              <span className="metric-box-hint">completion pace</span>
+                            </div>
+                            <div className="dept-metric-box">
+                              <span className="metric-box-label">Queue Trend</span>
+                              <strong className={`metric-box-val trend-val-${trendKey}`}>{trend}</strong>
+                              <span className="metric-box-hint">growth momentum</span>
+                            </div>
+                          </div>
+
+                          {dept.reason && (
+                            <div className="congestion-reason-card">
+                              <div className="congestion-note-title">
+                                <span className="material-symbols-outlined">info</span>
+                                <strong>Reason</strong>
+                              </div>
+                              <p className="congestion-note-text">{dept.reason}</p>
+                            </div>
+                          )}
+
+                          {dept.recommended_action && (
+                            <div className={`congestion-action-card action-${riskKey}`}>
+                              <div className="congestion-note-title">
+                                <span className="material-symbols-outlined">tips_and_updates</span>
+                                <strong>Recommended Action</strong>
+                              </div>
+                              <p className="congestion-note-text">{dept.recommended_action}</p>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="intelligence-loading-state">
+                      <span className="material-symbols-outlined intelligence-spinner-icon">sync</span>
+                      <p>Calculating queue congestion risks...</p>
                     </div>
                   )}
                 </div>

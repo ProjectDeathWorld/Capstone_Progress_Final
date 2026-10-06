@@ -353,6 +353,204 @@ class IntelligencePredictionTest extends TestCase
 
     public function test_peak_hour_calculation_identifies_busiest_hour_with_upcoming_weighting(): void
     {
+        $testNow = Carbon::parse('2026-10-05 08:30:00'); // Monday 8:30 AM
+        Carbon::setTestNow($testNow);
+
+        try {
+            $admin = $this->createHeadAdmin();
+            Sanctum::actingAs($admin);
+
+            ServiceWindow::create([
+                'department' => 'registrar',
+                'window_number' => 9,
+                'service_type' => 'RT',
+                'is_available' => true,
+                'status' => 'open',
+            ]);
+
+            // Create 20 tickets at 10:00 AM on past Mondays
+            $pastDate = $testNow->copy()->subWeeks(1)->startOfWeek(); // Monday
+            for ($i = 1; $i <= 20; $i++) {
+                QueueTicket::create([
+                    'ticket_number' => "R-P{$i}",
+                    'service_type' => 'R',
+                    'status' => 'done',
+                    'created_at' => $pastDate->copy()->setHour(10)->setMinute(15),
+                ]);
+            }
+
+            // Create 5 tickets at 8:00 AM on the same Monday
+            for ($j = 1; $j <= 5; $j++) {
+                QueueTicket::create([
+                    'ticket_number' => "R-M{$j}",
+                    'service_type' => 'R',
+                    'status' => 'done',
+                    'created_at' => $pastDate->copy()->setHour(8)->setMinute(10),
+                ]);
+            }
+
+            $response = $this->getJson('/api/intelligence/peak-hours?department=Registrar');
+            $response->assertStatus(200);
+
+            $data = $response->json('peak_predictions')[0];
+            $this->assertTrue($data['is_available']);
+            $this->assertStringContainsString('10:00 AM – 11:00 AM', $data['predicted_peak_formatted']);
+            $this->assertGreaterThanOrEqual(15, $data['expected_arrivals']);
+            $this->assertNotEmpty($data['expected_arrivals_formatted']);
+            $this->assertNotEmpty($data['peak_risk']);
+        } finally {
+            Carbon::setTestNow(); // Reset test time
+        }
+    }
+
+
+    public function test_congestion_risk_endpoint_rejects_unauthenticated_requests(): void
+    {
+        $response = $this->getJson('/api/intelligence/congestion-risk');
+        $response->assertStatus(401);
+    }
+
+    public function test_head_admin_can_retrieve_congestion_risks_for_all_departments(): void
+    {
+        $admin = $this->createHeadAdmin();
+        Sanctum::actingAs($admin);
+
+        ServiceWindow::create([
+            'department' => 'Cashier',
+            'window_number' => 1,
+            'service_type' => 'CS',
+            'is_available' => true,
+            'status' => 'open',
+        ]);
+
+        ServiceWindow::create([
+            'department' => 'registrar',
+            'window_number' => 9,
+            'service_type' => 'RT',
+            'is_available' => true,
+            'status' => 'open',
+        ]);
+
+        $response = $this->getJson('/api/intelligence/congestion-risk');
+        $response->assertStatus(200);
+        $response->assertJsonStructure([
+            'success',
+            'congestion_predictions' => [
+                '*' => [
+                    'department_name',
+                    'risk_score',
+                    'risk_level',
+                    'waiting_count',
+                    'active_windows',
+                    'arrival_rate_per_hour',
+                    'service_rate_per_hour',
+                    'queue_trend',
+                    'reason',
+                    'recommended_action',
+                ],
+            ],
+        ]);
+
+        $deptNames = collect($response->json('congestion_predictions'))->pluck('department_name')->all();
+        $this->assertContains('Cashier', $deptNames);
+        $this->assertContains('Registrar', $deptNames);
+    }
+
+    public function test_department_admin_only_retrieves_their_assigned_department_congestion_risk(): void
+    {
+        $registrarAdmin = $this->createDeptAdmin('regadmin', 'registrar');
+        Sanctum::actingAs($registrarAdmin);
+
+        ServiceWindow::create([
+            'department' => 'Cashier',
+            'window_number' => 1,
+            'service_type' => 'CS',
+            'is_available' => true,
+            'status' => 'open',
+        ]);
+
+        ServiceWindow::create([
+            'department' => 'registrar',
+            'window_number' => 9,
+            'service_type' => 'RT',
+            'is_available' => true,
+            'status' => 'open',
+        ]);
+
+        $response = $this->getJson('/api/intelligence/congestion-risk');
+        $response->assertStatus(200);
+
+        $predictions = $response->json('congestion_predictions');
+        $this->assertCount(1, $predictions);
+        $this->assertEquals('Registrar', $predictions[0]['department_name']);
+    }
+
+    public function test_department_admin_cannot_access_other_departments_congestion_risk_via_query_param(): void
+    {
+        $registrarAdmin = $this->createDeptAdmin('regadmin', 'registrar');
+        Sanctum::actingAs($registrarAdmin);
+
+        $response = $this->getJson('/api/intelligence/congestion-risk?department=Cashier');
+        $response->assertStatus(403);
+    }
+
+    public function test_zero_waiting_queue_returns_low_congestion_risk(): void
+    {
+        $admin = $this->createHeadAdmin();
+        Sanctum::actingAs($admin);
+
+        ServiceWindow::create([
+            'department' => 'Cashier',
+            'window_number' => 1,
+            'service_type' => 'CS',
+            'is_available' => true,
+            'status' => 'open',
+        ]);
+
+        $response = $this->getJson('/api/intelligence/congestion-risk?department=Cashier');
+        $response->assertStatus(200);
+
+        $data = $response->json('congestion_predictions')[0];
+        $this->assertEquals('LOW', $data['risk_level']);
+        $this->assertLessThanOrEqual(24, $data['risk_score']);
+        $this->assertEquals(0, $data['waiting_count']);
+        $this->assertStringContainsString('clear', strtolower($data['reason']));
+    }
+
+    public function test_zero_active_windows_with_waiting_queue_returns_critical_congestion_risk(): void
+    {
+        $admin = $this->createHeadAdmin();
+        Sanctum::actingAs($admin);
+
+        // Window exists but is unavailable/closed
+        ServiceWindow::create([
+            'department' => 'Cashier',
+            'window_number' => 1,
+            'service_type' => 'CS',
+            'is_available' => false,
+            'status' => 'closed',
+        ]);
+
+        QueueTicket::create([
+            'ticket_number' => 'C-001',
+            'service_type' => 'CS',
+            'status' => 'waiting',
+            'created_at' => Carbon::now(),
+        ]);
+
+        $response = $this->getJson('/api/intelligence/congestion-risk?department=Cashier');
+        $response->assertStatus(200);
+
+        $data = $response->json('congestion_predictions')[0];
+        $this->assertEquals('CRITICAL', $data['risk_level']);
+        $this->assertGreaterThanOrEqual(75, $data['risk_score']);
+        $this->assertEquals(0, $data['active_windows']);
+        $this->assertStringContainsString('no active service window', strtolower($data['reason']));
+        $this->assertStringContainsString('immediately open', strtolower($data['recommended_action']));
+    }
+
+    public function test_high_arrival_rate_exceeding_service_rate_increases_congestion_risk(): void
+    {
         $admin = $this->createHeadAdmin();
         Sanctum::actingAs($admin);
 
@@ -364,35 +562,49 @@ class IntelligencePredictionTest extends TestCase
             'status' => 'open',
         ]);
 
-        // Create 20 tickets at 10:00 AM on past Mondays
-        $pastDate = Carbon::now()->subWeeks(1)->startOfWeek(); // Monday
-        for ($i = 1; $i <= 20; $i++) {
+        // Historical service data so predicted wait time is calculable
+        for ($k = 1; $k <= 5; $k++) {
             QueueTicket::create([
-                'ticket_number' => "R-P{$i}",
-                'service_type' => 'R',
+                'ticket_number' => "R-HIST{$k}",
+                'service_type' => 'RT',
                 'status' => 'done',
-                'created_at' => $pastDate->copy()->setHour(10)->setMinute(15),
+                'called_at' => Carbon::today()->startOfDay()->addHours(8),
+                'completed_at' => Carbon::today()->startOfDay()->addHours(8)->addMinutes(5),
+                'created_at' => Carbon::today()->startOfDay()->addHours(8),
             ]);
         }
 
-        // Create 5 tickets at 8:00 AM on the same Monday
-        for ($j = 1; $j <= 5; $j++) {
+        // 30 waiting customers created in last 45 minutes
+        for ($i = 1; $i <= 30; $i++) {
             QueueTicket::create([
-                'ticket_number' => "R-M{$j}",
-                'service_type' => 'R',
-                'status' => 'done',
-                'created_at' => $pastDate->copy()->setHour(8)->setMinute(10),
+                'ticket_number' => "R-W{$i}",
+                'service_type' => 'RT',
+                'status' => 'waiting',
+                'created_at' => Carbon::now()->subMinutes(20),
             ]);
         }
 
-        $response = $this->getJson('/api/intelligence/peak-hours?department=Registrar');
+        // Only 2 completed in the last hour
+        for ($j = 1; $j <= 2; $j++) {
+            QueueTicket::create([
+                'ticket_number' => "R-D{$j}",
+                'service_type' => 'RT',
+                'status' => 'done',
+                'called_at' => Carbon::now()->subMinutes(40),
+                'completed_at' => Carbon::now()->subMinutes(35),
+                'created_at' => Carbon::now()->subMinutes(50),
+            ]);
+        }
+
+        $response = $this->getJson('/api/intelligence/congestion-risk?department=Registrar');
         $response->assertStatus(200);
 
-        $data = $response->json('peak_predictions')[0];
-        $this->assertTrue($data['is_available']);
-        $this->assertStringContainsString('10:00 AM – 11:00 AM', $data['predicted_peak_formatted']);
-        $this->assertGreaterThanOrEqual(15, $data['expected_arrivals']);
-        $this->assertNotEmpty($data['expected_arrivals_formatted']);
-        $this->assertNotEmpty($data['peak_risk']);
+        $data = $response->json('congestion_predictions')[0];
+        $this->assertEquals('CRITICAL', $data['risk_level']);
+        $this->assertGreaterThanOrEqual(75, $data['risk_score']);
+        $this->assertGreaterThan(2, $data['arrival_rate_per_hour']);
+        $this->assertStringContainsString('faster', strtolower($data['reason']));
+        $this->assertNotEmpty($data['recommended_action']);
     }
 }
+

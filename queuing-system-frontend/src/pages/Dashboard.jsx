@@ -5,7 +5,7 @@ import AdminLayout from "../components/AdminLayout";
 import KPICard from "../components/KPICard";
 import ModuleCard from "../components/ModuleCard";
 
-import { getDashboardAnalytics, getPredictedWaitTimes, getPeakHourPredictions } from "../api";
+import { getDashboardAnalytics, getPredictedWaitTimes, getPeakHourPredictions, getCongestionRisks } from "../api";
 import { getDepartmentDisplayName } from "../utils/departments";
 
 import {
@@ -30,6 +30,7 @@ function Dashboard() {
   const [analytics, setAnalytics] = useState(null);
   const [predictions, setPredictions] = useState([]);
   const [peakPredictions, setPeakPredictions] = useState([]);
+  const [congestionRisks, setCongestionRisks] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -38,10 +39,11 @@ function Dashboard() {
 
       try {
 
-        const [dashRes, predRes, peakRes] = await Promise.allSettled([
+        const [dashRes, predRes, peakRes, congRes] = await Promise.allSettled([
           getDashboardAnalytics(),
           getPredictedWaitTimes(),
           getPeakHourPredictions(),
+          getCongestionRisks(),
         ]);
         if (dashRes.status === "fulfilled") setAnalytics(dashRes.value);
         if (predRes.status === "fulfilled") {
@@ -57,6 +59,14 @@ function Dashboard() {
               ? peakRes.value.predictions
               : (Array.isArray(peakRes.value?.data) ? peakRes.value.data : []));
           setPeakPredictions(peakList);
+        }
+        if (congRes.status === "fulfilled") {
+          const congList = Array.isArray(congRes.value?.congestion_predictions)
+            ? congRes.value.congestion_predictions
+            : (Array.isArray(congRes.value?.predictions)
+              ? congRes.value.predictions
+              : (Array.isArray(congRes.value?.data) ? congRes.value.data : []));
+          setCongestionRisks(congList);
         }
 
       } catch (error) {
@@ -600,6 +610,215 @@ function Dashboard() {
                 <Grid size={{ xs: 12 }}>
                   <Typography color="text.secondary" align="center" sx={{ py: 3 }}>
                     Calculating peak hour predictions...
+                  </Typography>
+                </Grid>
+              )}
+            </Grid>
+          </Box>
+
+          <Box
+            sx={{
+              p: 3,
+              mt: 3,
+              borderRadius: 3,
+              backgroundColor: "#ffffff",
+              border: "1px solid #e2e8f0",
+              boxShadow: "0 2px 10px rgba(0,0,0,0.03)",
+            }}
+          >
+            <Box sx={{ mb: 3, pb: 2, borderBottom: "1px solid #f1f5f9" }}>
+              <Typography variant="h6" fontWeight="bold">
+                Smart Queue Congestion Risk
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Multi-factor capacity analysis evaluating queue length, arrival velocity, service speed, active windows, and growth trends.
+              </Typography>
+            </Box>
+
+            <Grid container spacing={3}>
+              {congestionRisks && congestionRisks.length > 0 ? (
+                congestionRisks.map((dept) => {
+                  const risk = String(dept.risk_level || "NORMAL").toUpperCase();
+                  const riskColor =
+                    risk === "CRITICAL"
+                      ? "#ef4444"
+                      : risk === "HIGH"
+                      ? "#f97316"
+                      : risk === "NORMAL"
+                      ? "#0284c7"
+                      : "#10b981";
+                  const riskBg =
+                    risk === "CRITICAL"
+                      ? "#fee2e2"
+                      : risk === "HIGH"
+                      ? "#ffedd5"
+                      : risk === "NORMAL"
+                      ? "#e0f2fe"
+                      : "#dcfce7";
+                  const score = dept.risk_score ?? 0;
+                  const trend = dept.queue_trend || "STABLE";
+
+                  return (
+                    <Grid key={dept.department_key || dept.department_name} size={{ xs: 12, md: 6, lg: 3 }}>
+                      <Box
+                        sx={{
+                          p: 2.5,
+                          borderRadius: 2.5,
+                          border: "1px solid #e2e8f0",
+                          borderTop: `4px solid ${riskColor}`,
+                          backgroundColor: "#fafbfc",
+                          height: "100%",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 2,
+                        }}
+                      >
+                        <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                          <Box>
+                            <Typography variant="caption" color="text.secondary" fontWeight="bold" sx={{ textTransform: "uppercase" }}>
+                              Department
+                            </Typography>
+                            <Typography variant="h6" fontWeight="bold">
+                              {getDepartmentDisplayName(dept.department_name)}
+                            </Typography>
+                          </Box>
+                          <Box
+                            sx={{
+                              px: 1.2,
+                              py: 0.4,
+                              borderRadius: 1.5,
+                              backgroundColor: riskBg,
+                              color: riskColor,
+                              fontSize: "0.75rem",
+                              fontWeight: "bold",
+                            }}
+                          >
+                            {risk} RISK
+                          </Box>
+                        </Box>
+
+                        <Box sx={{ p: 1.5, borderRadius: 2, backgroundColor: "#ffffff", border: "1px solid #e2e8f0" }}>
+                          <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 0.5 }}>
+                            <Typography variant="caption" fontWeight="600" color="text.secondary">
+                              CONGESTION RISK SCORE
+                            </Typography>
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                fontSize: "0.75rem",
+                                px: 1,
+                                py: 0.2,
+                                bgcolor: riskBg,
+                                color: riskColor,
+                                borderRadius: 1,
+                                fontWeight: "bold",
+                              }}
+                            >
+                              {score} / 100
+                            </Typography>
+                          </Box>
+                          <Box sx={{ width: "100%", bgcolor: "#f1f5f9", borderRadius: 1, height: 8, mt: 1, overflow: "hidden" }}>
+                            <Box sx={{ width: `${Math.max(4, Math.min(100, score))}%`, bgcolor: riskColor, height: "100%", borderRadius: 1 }} />
+                          </Box>
+                          {dept.peak_period_approaching && (
+                            <Typography variant="caption" color="warning.main" sx={{ display: "block", mt: 0.8, fontWeight: 600 }}>
+                              ⚠️ Peak period approaching
+                            </Typography>
+                          )}
+                        </Box>
+
+                        <Grid container spacing={1}>
+                          <Grid size={{ xs: 6 }}>
+                            <Box sx={{ p: 1, bgcolor: "#ffffff", borderRadius: 1.5, border: "1px solid #f1f5f9" }}>
+                              <Typography variant="caption" color="text.secondary" sx={{ display: "block", fontSize: "0.7rem" }}>
+                                CURRENT QUEUE
+                              </Typography>
+                              <Typography variant="body1" fontWeight="bold">
+                                {dept.waiting_count}
+                              </Typography>
+                            </Box>
+                          </Grid>
+                          <Grid size={{ xs: 6 }}>
+                            <Box sx={{ p: 1, bgcolor: "#ffffff", borderRadius: 1.5, border: "1px solid #f1f5f9" }}>
+                              <Typography variant="caption" color="text.secondary" sx={{ display: "block", fontSize: "0.7rem" }}>
+                                PREDICTED WAIT
+                              </Typography>
+                              <Typography variant="body2" fontWeight="bold" sx={{ color: "#0f172a" }}>
+                                {dept.predicted_wait_formatted || "Unavailable"}
+                              </Typography>
+                            </Box>
+                          </Grid>
+                          <Grid size={{ xs: 6 }}>
+                            <Box sx={{ p: 1, bgcolor: "#ffffff", borderRadius: 1.5, border: "1px solid #f1f5f9" }}>
+                              <Typography variant="caption" color="text.secondary" sx={{ display: "block", fontSize: "0.7rem" }}>
+                                ACTIVE WINDOWS
+                              </Typography>
+                              <Typography variant="body1" fontWeight="bold">
+                                {dept.active_windows}
+                              </Typography>
+                            </Box>
+                          </Grid>
+                          <Grid size={{ xs: 6 }}>
+                            <Box sx={{ p: 1, bgcolor: "#ffffff", borderRadius: 1.5, border: "1px solid #f1f5f9" }}>
+                              <Typography variant="caption" color="text.secondary" sx={{ display: "block", fontSize: "0.7rem" }}>
+                                QUEUE TREND
+                              </Typography>
+                              <Typography variant="body2" fontWeight="bold">
+                                {trend}
+                              </Typography>
+                            </Box>
+                          </Grid>
+                          <Grid size={{ xs: 6 }}>
+                            <Box sx={{ p: 1, bgcolor: "#ffffff", borderRadius: 1.5, border: "1px solid #f1f5f9" }}>
+                              <Typography variant="caption" color="text.secondary" sx={{ display: "block", fontSize: "0.7rem" }}>
+                                ARRIVAL RATE
+                              </Typography>
+                              <Typography variant="body2" fontWeight="bold">
+                                {dept.arrival_rate_per_hour}/hour
+                              </Typography>
+                            </Box>
+                          </Grid>
+                          <Grid size={{ xs: 6 }}>
+                            <Box sx={{ p: 1, bgcolor: "#ffffff", borderRadius: 1.5, border: "1px solid #f1f5f9" }}>
+                              <Typography variant="caption" color="text.secondary" sx={{ display: "block", fontSize: "0.7rem" }}>
+                                SERVICE RATE
+                              </Typography>
+                              <Typography variant="body2" fontWeight="bold">
+                                {dept.service_rate_per_hour}/hour
+                              </Typography>
+                            </Box>
+                          </Grid>
+                        </Grid>
+
+                        {dept.reason && (
+                          <Box sx={{ p: 1.2, bgcolor: "#f8fafc", borderRadius: 1.5, border: "1px solid #e2e8f0" }}>
+                            <Typography variant="caption" color="text.secondary" fontWeight="bold" sx={{ display: "block" }}>
+                              REASON
+                            </Typography>
+                            <Typography variant="caption" color="text.primary" sx={{ display: "block", lineHeight: 1.3 }}>
+                              {dept.reason}
+                            </Typography>
+                          </Box>
+                        )}
+
+                        {dept.recommended_action && (
+                          <Box sx={{ p: 1.2, bgcolor: riskBg, borderRadius: 1.5, border: `1px solid ${riskColor}33` }}>
+                            <Typography variant="caption" sx={{ color: riskColor, fontWeight: "bold", display: "block" }}>
+                              RECOMMENDED ACTION
+                            </Typography>
+                            <Typography variant="caption" sx={{ color: "#0f172a", display: "block", lineHeight: 1.3 }}>
+                              {dept.recommended_action}
+                            </Typography>
+                          </Box>
+                        )}
+                      </Box>
+                    </Grid>
+                  );
+                })
+              ) : (
+                <Grid size={{ xs: 12 }}>
+                  <Typography color="text.secondary" align="center" sx={{ py: 3 }}>
+                    Calculating queue congestion risks...
                   </Typography>
                 </Grid>
               )}

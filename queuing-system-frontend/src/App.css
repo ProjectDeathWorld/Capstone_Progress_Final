@@ -14695,3 +14695,173 @@ body:has(.staff-mini-window),
   text-overflow: ellipsis;
 }
 
+/* Smart Queue Congestion Risk Panel & Cards */
+.congestion-prediction-panel {
+  margin-top: 24px;
+}
+
+.congestion-icon-avatar {
+  background: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%) !important;
+  color: #ffffff !important;
+}
+
+.congestion-forecast-badge {
+  color: #991b1b !important;
+  background: #fee2e2 !important;
+  border-color: #fca5a5 !important;
+}
+
+.congestion-hero {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+
+.congestion-score-badge {
+  font-size: 0.82rem;
+  font-weight: 800;
+  padding: 3px 9px;
+  border-radius: 6px;
+  letter-spacing: 0.02em;
+}
+
+.congestion-score-badge.status-low {
+  background: #dcfce7;
+  color: #15803d;
+  border: 1px solid #86efac;
+}
+
+.congestion-score-badge.status-normal {
+  background: #e0f2fe;
+  color: #0369a1;
+  border: 1px solid #7dd3fc;
+}
+
+.congestion-score-badge.status-high {
+  background: #ffedd5;
+  color: #c2410c;
+  border: 1px solid #fdba74;
+}
+
+.congestion-score-badge.status-critical {
+  background: #fee2e2;
+  color: #b91c1c;
+  border: 1px solid #fca5a5;
+}
+
+.congestion-score-bar-wrapper {
+  width: 100%;
+  height: 8px;
+  background: #e2e8f0;
+  border-radius: 9999px;
+  overflow: hidden;
+  margin-top: 8px;
+}
+
+.congestion-score-bar-fill {
+  height: 100%;
+  border-radius: 9999px;
+  transition: width 0.4s ease;
+}
+
+.congestion-score-bar-fill.status-low { background: #10b981; }
+.congestion-score-bar-fill.status-normal { background: #0284c7; }
+.congestion-score-bar-fill.status-high { background: #f97316; }
+.congestion-score-bar-fill.status-critical { background: #ef4444; }
+
+.congestion-peak-alert {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #c2410c;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 8px;
+  padding: 6px 10px;
+  margin-top: 10px;
+}
+
+.congestion-peak-alert .material-symbols-outlined {
+  font-size: 16px;
+}
+
+.congestion-metrics-table {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.congestion-reason-card {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.congestion-action-card {
+  border-radius: 10px;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+}
+
+.congestion-action-card.action-low {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+}
+.congestion-action-card.action-low .congestion-note-title { color: #166534; }
+.congestion-action-card.action-low .congestion-note-text { color: #14532d; }
+
+.congestion-action-card.action-normal {
+  background: #f0f9ff;
+  border-color: #bae6fd;
+}
+.congestion-action-card.action-normal .congestion-note-title { color: #0369a1; }
+.congestion-action-card.action-normal .congestion-note-text { color: #0c4a6e; }
+
+.congestion-action-card.action-high {
+  background: #fff7ed;
+  border-color: #fed7aa;
+}
+.congestion-action-card.action-high .congestion-note-title { color: #c2410c; }
+.congestion-action-card.action-high .congestion-note-text { color: #7c2d12; }
+
+.congestion-action-card.action-critical {
+  background: #fef2f2;
+  border-color: #fecaca;
+}
+.congestion-action-card.action-critical .congestion-note-title { color: #b91c1c; }
+.congestion-action-card.action-critical .congestion-note-text { color: #7f1d1d; }
+
+.congestion-note-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #64748b;
+  margin-bottom: 4px;
+}
+
+.congestion-note-title .material-symbols-outlined {
+  font-size: 15px;
+}
+
+.congestion-note-text {
+  font-size: 0.8rem;
+  line-height: 1.4;
+  margin: 0;
+  color: #1e293b;
+  font-weight: 500;
+}
+
+.trend-val-rapidly-increasing { color: #dc2626 !important; font-weight: 800; }
+.trend-val-increasing { color: #ea580c !important; font-weight: 700; }
+.trend-val-stable { color: #0284c7 !important; font-weight: 700; }
+.trend-val-decreasing { color: #16a34a !important; font-weight: 700; }
+
+

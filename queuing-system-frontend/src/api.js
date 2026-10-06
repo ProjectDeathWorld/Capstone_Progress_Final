@@ -354,6 +354,13 @@ export async function getPeakHourPredictions(department = null, signal = null) {
   return fetchJson(url, { headers: getHeaders(true), signal });
 }
 
+export async function getCongestionRisks(department = null, signal = null) {
+  let url = `${API_BASE}/intelligence/congestion-risk`;
+  if (department) url += `?department=${encodeURIComponent(department)}`;
+  return fetchJson(url, { headers: getHeaders(true), signal });
+}
+
+
 // ─── Window Availability ─────────────────────────────
 export async function getWindowAvailability(signal = null) {
   const data = await fetchJson(`${API_BASE}/windows/availability`, {
