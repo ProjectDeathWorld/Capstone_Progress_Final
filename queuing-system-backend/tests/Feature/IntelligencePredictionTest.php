@@ -246,4 +246,153 @@ class IntelligencePredictionTest extends TestCase
         $this->assertEquals('35–45 minutes', $data['predicted_wait_formatted']);
         $this->assertEquals('CRITICAL', $data['queue_status']);
     }
+
+    public function test_head_admin_can_retrieve_peak_hour_predictions_for_all_departments(): void
+    {
+        $admin = $this->createHeadAdmin();
+        Sanctum::actingAs($admin);
+
+        ServiceWindow::create([
+            'department' => 'Cashier',
+            'window_number' => 1,
+            'service_type' => 'CS',
+            'is_available' => true,
+            'status' => 'open',
+        ]);
+
+        ServiceWindow::create([
+            'department' => 'registrar',
+            'window_number' => 9,
+            'service_type' => 'RT',
+            'is_available' => true,
+            'status' => 'open',
+        ]);
+
+        $response = $this->getJson('/api/intelligence/peak-hours');
+        $response->assertStatus(200);
+        $response->assertJsonStructure([
+            'success',
+            'peak_predictions' => [
+                '*' => [
+                    'department_name',
+                    'predicted_peak_formatted',
+                    'expected_arrivals_formatted',
+                    'peak_risk',
+                    'confidence_text',
+                    'historical_pattern',
+                ],
+            ],
+        ]);
+
+        $deptNames = collect($response->json('peak_predictions'))->pluck('department_name')->all();
+        $this->assertContains('Cashier', $deptNames);
+        $this->assertContains('Registrar', $deptNames);
+    }
+
+    public function test_department_admin_only_retrieves_their_assigned_department_peak_prediction(): void
+    {
+        $registrarAdmin = $this->createDeptAdmin('regadmin', 'registrar');
+        Sanctum::actingAs($registrarAdmin);
+
+        ServiceWindow::create([
+            'department' => 'Cashier',
+            'window_number' => 1,
+            'service_type' => 'CS',
+            'is_available' => true,
+            'status' => 'open',
+        ]);
+
+        ServiceWindow::create([
+            'department' => 'registrar',
+            'window_number' => 9,
+            'service_type' => 'RT',
+            'is_available' => true,
+            'status' => 'open',
+        ]);
+
+        $response = $this->getJson('/api/intelligence/peak-hours');
+        $response->assertStatus(200);
+
+        $predictions = $response->json('peak_predictions');
+        $this->assertCount(1, $predictions);
+        $this->assertEquals('Registrar', $predictions[0]['department_name']);
+    }
+
+    public function test_department_admin_cannot_access_other_departments_peak_prediction_via_query_param(): void
+    {
+        $registrarAdmin = $this->createDeptAdmin('regadmin', 'registrar');
+        Sanctum::actingAs($registrarAdmin);
+
+        $response = $this->getJson('/api/intelligence/peak-hours?department=Cashier');
+        $response->assertStatus(403);
+    }
+
+    public function test_insufficient_data_returns_unavailable_peak_prediction(): void
+    {
+        $admin = $this->createHeadAdmin();
+        Sanctum::actingAs($admin);
+
+        ServiceWindow::firstOrCreate([
+            'department' => 'Admission',
+            'window_number' => 1,
+        ], [
+            'service_type' => 'ADM',
+            'is_available' => true,
+            'status' => 'open',
+        ]);
+
+        $response = $this->getJson('/api/intelligence/peak-hours?department=Admission');
+        $response->assertStatus(200);
+
+        $data = $response->json('peak_predictions')[0];
+        $this->assertEquals('Peak prediction unavailable — insufficient historical data', $data['predicted_peak_formatted']);
+        $this->assertEquals('Unavailable', $data['expected_arrivals_formatted']);
+        $this->assertEquals('Limited data', $data['confidence_text']);
+        $this->assertFalse($data['is_available']);
+    }
+
+    public function test_peak_hour_calculation_identifies_busiest_hour_with_upcoming_weighting(): void
+    {
+        $admin = $this->createHeadAdmin();
+        Sanctum::actingAs($admin);
+
+        ServiceWindow::create([
+            'department' => 'registrar',
+            'window_number' => 9,
+            'service_type' => 'RT',
+            'is_available' => true,
+            'status' => 'open',
+        ]);
+
+        // Create 20 tickets at 10:00 AM on past Mondays
+        $pastDate = Carbon::now()->subWeeks(1)->startOfWeek(); // Monday
+        for ($i = 1; $i <= 20; $i++) {
+            QueueTicket::create([
+                'ticket_number' => "R-P{$i}",
+                'service_type' => 'R',
+                'status' => 'done',
+                'created_at' => $pastDate->copy()->setHour(10)->setMinute(15),
+            ]);
+        }
+
+        // Create 5 tickets at 8:00 AM on the same Monday
+        for ($j = 1; $j <= 5; $j++) {
+            QueueTicket::create([
+                'ticket_number' => "R-M{$j}",
+                'service_type' => 'R',
+                'status' => 'done',
+                'created_at' => $pastDate->copy()->setHour(8)->setMinute(10),
+            ]);
+        }
+
+        $response = $this->getJson('/api/intelligence/peak-hours?department=Registrar');
+        $response->assertStatus(200);
+
+        $data = $response->json('peak_predictions')[0];
+        $this->assertTrue($data['is_available']);
+        $this->assertStringContainsString('10:00 AM – 11:00 AM', $data['predicted_peak_formatted']);
+        $this->assertGreaterThanOrEqual(15, $data['expected_arrivals']);
+        $this->assertNotEmpty($data['expected_arrivals_formatted']);
+        $this->assertNotEmpty($data['peak_risk']);
+    }
 }

@@ -54,4 +54,43 @@ class IntelligenceController extends Controller
             'user_department' => $currentUser?->department,
         ]);
     }
+
+    /**
+     * Get peak hour prediction intelligence for departments.
+     * Enforces server-side department isolation for Department Admins.
+     */
+    public function getPeakHoursPrediction(Request $request): JsonResponse
+    {
+        $currentUser = $request->user('sanctum') ?? $request->user();
+
+        if ($currentUser?->isDeptAdmin()) {
+            $userDept = $currentUser->department;
+
+            if ($request->filled('department')) {
+                $requestedDept = Departments::name($request->query('department'));
+                abort_unless($requestedDept === $userDept, 403, 'Access denied: You can only view intelligence for your assigned department.');
+            }
+
+            $targetDepartments = $userDept ? [$userDept] : [];
+        } else {
+            // Head Admin can query all active departments or a specific one
+            if ($request->filled('department')) {
+                $requestedDept = Departments::name($request->query('department'));
+                $targetDepartments = $requestedDept ? [$requestedDept] : [];
+            } else {
+                $targetDepartments = $this->intelligenceService->getActiveDepartments();
+            }
+        }
+
+        $predictions = $this->intelligenceService->getAllDepartmentPeakPredictions($targetDepartments);
+
+        return response()->json([
+            'success' => true,
+            'peak_predictions' => $predictions,
+            'predictions' => $predictions,
+            'data' => $predictions,
+            'is_dept_admin' => (bool) $currentUser?->isDeptAdmin(),
+            'user_department' => $currentUser?->department,
+        ]);
+    }
 }

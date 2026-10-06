@@ -5,7 +5,7 @@ import AdminLayout from "../components/AdminLayout";
 import KPICard from "../components/KPICard";
 import ModuleCard from "../components/ModuleCard";
 
-import { getDashboardAnalytics, getPredictedWaitTimes } from "../api";
+import { getDashboardAnalytics, getPredictedWaitTimes, getPeakHourPredictions } from "../api";
 import { getDepartmentDisplayName } from "../utils/departments";
 
 import {
@@ -29,6 +29,7 @@ function Dashboard() {
 
   const [analytics, setAnalytics] = useState(null);
   const [predictions, setPredictions] = useState([]);
+  const [peakPredictions, setPeakPredictions] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -37,9 +38,10 @@ function Dashboard() {
 
       try {
 
-        const [dashRes, predRes] = await Promise.allSettled([
+        const [dashRes, predRes, peakRes] = await Promise.allSettled([
           getDashboardAnalytics(),
           getPredictedWaitTimes(),
+          getPeakHourPredictions(),
         ]);
         if (dashRes.status === "fulfilled") setAnalytics(dashRes.value);
         if (predRes.status === "fulfilled") {
@@ -47,6 +49,14 @@ function Dashboard() {
             ? predRes.value.predictions
             : (Array.isArray(predRes.value?.data) ? predRes.value.data : []);
           setPredictions(list);
+        }
+        if (peakRes.status === "fulfilled") {
+          const peakList = Array.isArray(peakRes.value?.peak_predictions)
+            ? peakRes.value.peak_predictions
+            : (Array.isArray(peakRes.value?.predictions)
+              ? peakRes.value.predictions
+              : (Array.isArray(peakRes.value?.data) ? peakRes.value.data : []));
+          setPeakPredictions(peakList);
         }
 
       } catch (error) {
@@ -425,6 +435,171 @@ function Dashboard() {
                 <Grid size={{ xs: 12 }}>
                   <Typography color="text.secondary" align="center" sx={{ py: 3 }}>
                     Calculating waiting time predictions...
+                  </Typography>
+                </Grid>
+              )}
+            </Grid>
+          </Box>
+
+          <Box
+            sx={{
+              p: 3,
+              mt: 3,
+              borderRadius: 3,
+              backgroundColor: "#ffffff",
+              border: "1px solid #e2e8f0",
+              boxShadow: "0 2px 10px rgba(0,0,0,0.03)",
+            }}
+          >
+            <Box sx={{ mb: 3, pb: 2, borderBottom: "1px solid #f1f5f9" }}>
+              <Typography variant="h6" fontWeight="bold">
+                Peak Hour Prediction
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Predicts the busiest upcoming time period for each department based on historical queue arrivals and recent queue activity.
+              </Typography>
+            </Box>
+
+            <Grid container spacing={3}>
+              {peakPredictions && peakPredictions.length > 0 ? (
+                peakPredictions.map((dept) => {
+                  const risk = String(dept.peak_risk || "NORMAL").toUpperCase();
+                  const riskColor =
+                    risk === "CRITICAL"
+                      ? "#ef4444"
+                      : risk === "HIGH"
+                      ? "#f97316"
+                      : risk === "NORMAL"
+                      ? "#0284c7"
+                      : "#10b981";
+                  const riskBg =
+                    risk === "CRITICAL"
+                      ? "#fee2e2"
+                      : risk === "HIGH"
+                      ? "#ffedd5"
+                      : risk === "NORMAL"
+                      ? "#e0f2fe"
+                      : "#dcfce7";
+
+                  return (
+                    <Grid key={dept.department_key || dept.department_name} size={{ xs: 12, md: 6, lg: 3 }}>
+                      <Box
+                        sx={{
+                          p: 2.5,
+                          borderRadius: 2.5,
+                          border: "1px solid #e2e8f0",
+                          borderTop: `4px solid ${riskColor}`,
+                          backgroundColor: "#fafbfc",
+                          height: "100%",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 2,
+                        }}
+                      >
+                        <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                          <Box>
+                            <Typography variant="caption" color="text.secondary" fontWeight="bold" sx={{ textTransform: "uppercase" }}>
+                              Department
+                            </Typography>
+                            <Typography variant="h6" fontWeight="bold">
+                              {getDepartmentDisplayName(dept.department_name)}
+                            </Typography>
+                          </Box>
+                          <Box
+                            sx={{
+                              px: 1.2,
+                              py: 0.4,
+                              borderRadius: 1.5,
+                              backgroundColor: riskBg,
+                              color: riskColor,
+                              fontSize: "0.75rem",
+                              fontWeight: "bold",
+                            }}
+                          >
+                            {risk} RISK
+                          </Box>
+                        </Box>
+
+                        <Box sx={{ p: 1.5, borderRadius: 2, backgroundColor: "#ffffff", border: "1px solid #e2e8f0" }}>
+                          <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 0.5 }}>
+                            <Typography variant="caption" fontWeight="600" color="text.secondary">
+                              PREDICTED PEAK TIME
+                            </Typography>
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                fontSize: "0.65rem",
+                                px: 0.8,
+                                py: 0.2,
+                                bgcolor: dept.is_upcoming ? "#eff6ff" : "#f1f5f9",
+                                color: dept.is_upcoming ? "#1d4ed8" : "#64748b",
+                                borderRadius: 1,
+                                fontWeight: "bold",
+                              }}
+                            >
+                              {dept.is_upcoming ? "UPCOMING TODAY" : "CONCLUDED"}
+                            </Typography>
+                          </Box>
+                          <Typography variant="h5" fontWeight="bold" sx={{ color: "#0f172a" }}>
+                            {dept.predicted_peak_formatted || "Unavailable"}
+                          </Typography>
+                          {dept.status_reason && (
+                            <Typography variant="caption" color="error" sx={{ display: "block", mt: 0.5 }}>
+                              {dept.status_reason}
+                            </Typography>
+                          )}
+                        </Box>
+
+                        <Grid container spacing={1}>
+                          <Grid size={{ xs: 6 }}>
+                            <Box sx={{ p: 1, bgcolor: "#ffffff", borderRadius: 1.5, border: "1px solid #f1f5f9" }}>
+                              <Typography variant="caption" color="text.secondary" sx={{ display: "block", fontSize: "0.7rem" }}>
+                                EXPECTED VOLUME
+                              </Typography>
+                              <Typography variant="body1" fontWeight="bold">
+                                {dept.expected_arrivals_formatted || "N/A"}
+                              </Typography>
+                            </Box>
+                          </Grid>
+                          <Grid size={{ xs: 6 }}>
+                            <Box sx={{ p: 1, bgcolor: "#ffffff", borderRadius: 1.5, border: "1px solid #f1f5f9" }}>
+                              <Typography variant="caption" color="text.secondary" sx={{ display: "block", fontSize: "0.7rem" }}>
+                                PEAK RISK
+                              </Typography>
+                              <Typography variant="body1" fontWeight="bold" sx={{ color: riskColor }}>
+                                {risk}
+                              </Typography>
+                            </Box>
+                          </Grid>
+                          <Grid size={{ xs: 6 }}>
+                            <Box sx={{ p: 1, bgcolor: "#ffffff", borderRadius: 1.5, border: "1px solid #f1f5f9" }}>
+                              <Typography variant="caption" color="text.secondary" sx={{ display: "block", fontSize: "0.7rem" }}>
+                                CONFIDENCE
+                              </Typography>
+                              <Typography variant="body1" fontWeight="bold">
+                                {dept.confidence_text || `${dept.confidence}%`}
+                              </Typography>
+                            </Box>
+                          </Grid>
+                          <Grid size={{ xs: 6 }}>
+                            <Box sx={{ p: 1, bgcolor: "#ffffff", borderRadius: 1.5, border: "1px solid #f1f5f9" }}>
+                              <Typography variant="caption" color="text.secondary" sx={{ display: "block", fontSize: "0.7rem" }}>
+                                HISTORICAL PATTERN
+                              </Typography>
+                              <Typography variant="caption" sx={{ display: "block", fontWeight: 500, color: "#334155", lineHeight: 1.2 }}>
+                                {dept.historical_pattern || "Standard pattern"}
+                              </Typography>
+                            </Box>
+                          </Grid>
+                        </Grid>
+                      </Box>
+                    </Grid>
+                  );
+                })
+              ) : (
+                <Grid size={{ xs: 12 }}>
+                  <Typography color="text.secondary" align="center" sx={{ py: 3 }}>
+                    Calculating peak hour predictions...
                   </Typography>
                 </Grid>
               )}

@@ -306,4 +306,279 @@ class IntelligenceService
         }
         return $predictions;
     }
+
+    /**
+     * Peak Risk Thresholds (expected arrivals in peak hour)
+     */
+    public const PEAK_RISK_THRESHOLDS = [
+        'LOW' => 10,
+        'NORMAL' => 20,
+        'HIGH' => 30,
+    ];
+
+    public const OPERATING_HOURS_START = 7;
+    public const OPERATING_HOURS_END = 18; // 6:00 PM - 7:00 PM interval starts at 18
+
+    /**
+     * Determine Peak Risk level.
+     */
+    public static function determinePeakRisk(float $expectedArrivals, ?string $department = null): string
+    {
+        if ($expectedArrivals <= self::PEAK_RISK_THRESHOLDS['LOW']) {
+            return 'LOW';
+        }
+        if ($expectedArrivals <= self::PEAK_RISK_THRESHOLDS['NORMAL']) {
+            return 'NORMAL';
+        }
+        if ($expectedArrivals <= self::PEAK_RISK_THRESHOLDS['HIGH']) {
+            return 'HIGH';
+        }
+        return 'CRITICAL';
+    }
+
+    /**
+     * Format hour range into readable AM/PM string (e.g. 10:00 AM – 11:00 AM).
+     */
+    public static function formatHourRange(int $startHour): string
+    {
+        $format = fn (int $h) => $h < 12 ? "{$h}:00 AM" : ($h === 12 ? '12:00 PM' : ($h - 12) . ':00 PM');
+        return $format($startHour) . ' – ' . $format($startHour + 1);
+    }
+
+    /**
+     * Predict Peak Hour for a department using historical arrival patterns,
+     * same-day-of-week weighted averages, and upcoming time horizon.
+     */
+    public function getDepartmentPeakPrediction(string $departmentName, ?Carbon $now = null): array
+    {
+        $now = $now ? $now->copy() : Carbon::now();
+        $normalizedName = Departments::name($departmentName) ?? $departmentName;
+        $types = Departments::types($normalizedName);
+
+        if (empty($types)) {
+            return $this->emptyPeakPayload($normalizedName, 'Invalid department');
+        }
+
+        $isSqlite = DB::connection()->getDriverName() === 'sqlite';
+        $hourSql = $isSqlite ? "CAST(strftime('%H', created_at) AS INTEGER)" : 'HOUR(created_at)';
+        $dateSql = $isSqlite ? 'date(created_at)' : 'DATE(created_at)';
+        $dayOfWeekSql = $isSqlite ? '(CAST(strftime(\'%w\', created_at) AS INTEGER) + 1)' : 'DAYOFWEEK(created_at)';
+
+        $ticketsQuery = QueueTicket::query()
+            ->whereIn('service_type', $types)
+            ->whereNotNull('created_at')
+            ->whereRaw("{$hourSql} BETWEEN ? AND ?", [self::OPERATING_HOURS_START, self::OPERATING_HOURS_END]);
+
+        $totalTicketCount = (int) (clone $ticketsQuery)->count();
+
+        // Insufficient historical records check (< 3 records)
+        if ($totalTicketCount < 3) {
+            return $this->emptyPeakPayload($normalizedName, 'Not enough records to establish an arrival trend', $totalTicketCount);
+        }
+
+        $currentHour = (int) $now->format('G');
+        // In MySQL DAYOFWEEK: 1=Sun, 2=Mon... Carbon $now->dayOfWeek + 1 matches this.
+        $currentDayOfWeekNum = $now->dayOfWeek + 1;
+        $dayName = $now->format('l');
+
+        // Look for historical operating dates prior to today
+        $historicalDates = (clone $ticketsQuery)
+            ->where('created_at', '<', $now->copy()->startOfDay())
+            ->selectRaw("{$dateSql} as op_date, {$dayOfWeekSql} as dow, COUNT(*) as cnt")
+            ->groupByRaw("{$dateSql}, {$dayOfWeekSql}")
+            ->orderByDesc('op_date')
+            ->get();
+
+        // If no prior dates exist (e.g. initial deployment with all tickets today), evaluate all dates
+        if ($historicalDates->isEmpty()) {
+            $historicalDates = (clone $ticketsQuery)
+                ->selectRaw("{$dateSql} as op_date, {$dayOfWeekSql} as dow, COUNT(*) as cnt")
+                ->groupByRaw("{$dateSql}, {$dayOfWeekSql}")
+                ->orderByDesc('op_date')
+                ->get();
+        }
+
+        // Compare same day of week when possible
+        $sameWeekdayDates = $historicalDates->filter(fn ($d) => (int) $d->dow === $currentDayOfWeekNum)->values();
+
+        if ($sameWeekdayDates->isNotEmpty()) {
+            $selectedDates = $sameWeekdayDates->take(4);
+            $pattern = "Based on recent {$dayName}s and current queue activity";
+            $source = 'recent_same_weekday_history';
+        } else {
+            $selectedDates = $historicalDates->take(4);
+            $pattern = 'Based on recent operating days and current queue activity';
+            $source = 'recent_operating_history';
+        }
+
+        $baseWeights = [0.40, 0.30, 0.20, 0.10];
+        $numDates = $selectedDates->count();
+        $sliceWeights = array_slice($baseWeights, 0, $numDates);
+        $weightSum = array_sum($sliceWeights);
+        $normalizedWeights = array_map(fn ($w) => $w / $weightSum, $sliceWeights);
+
+        $hourlyArrivals = [];
+        for ($h = self::OPERATING_HOURS_START; $h <= self::OPERATING_HOURS_END; $h++) {
+            $hourlyArrivals[$h] = 0.0;
+        }
+
+        foreach ($selectedDates as $i => $dateRow) {
+            $dateTickets = (clone $ticketsQuery)
+                ->whereRaw("{$dateSql} = ?", [$dateRow->op_date])
+                ->selectRaw("{$hourSql} as hr, COUNT(*) as cnt")
+                ->groupByRaw("{$hourSql}")
+                ->pluck('cnt', 'hr');
+
+            $weight = $normalizedWeights[$i] ?? 0.25;
+            foreach ($hourlyArrivals as $hour => &$val) {
+                $val += ((int) ($dateTickets[$hour] ?? 0)) * $weight;
+            }
+            unset($val);
+        }
+
+        // Incorporate today's real-time queue activity if available
+        $todayTicketsCount = (int) (clone $ticketsQuery)
+            ->where('created_at', '>=', $now->copy()->startOfDay())
+            ->where('created_at', '<=', $now)
+            ->count();
+
+        if ($todayTicketsCount > 0 && $currentHour > self::OPERATING_HOURS_START) {
+            $expectedSoFar = 0.0;
+            for ($h = self::OPERATING_HOURS_START; $h < $currentHour; $h++) {
+                $expectedSoFar += ($hourlyArrivals[$h] ?? 0);
+            }
+            if ($expectedSoFar >= 1.0) {
+                $paceRatio = $todayTicketsCount / $expectedSoFar;
+                $paceFactor = max(0.8, min(1.3, $paceRatio));
+                for ($h = max(self::OPERATING_HOURS_START, $currentHour); $h <= self::OPERATING_HOURS_END; $h++) {
+                    $hourlyArrivals[$h] *= $paceFactor;
+                }
+            }
+        }
+
+        // Determine upcoming peak vs finished period
+        $isUpcoming = true;
+        $statusReason = null;
+
+        if ($currentHour > self::OPERATING_HOURS_END) {
+            // Outside today's operating hours
+            $isUpcoming = false;
+            $peakHour = array_keys($hourlyArrivals, max($hourlyArrivals))[0];
+            $statusReason = 'No additional peak period predicted for today';
+        } else {
+            // Evaluate remaining operating hours for today
+            $remainingHours = [];
+            for ($h = max(self::OPERATING_HOURS_START, $currentHour); $h <= self::OPERATING_HOURS_END; $h++) {
+                $remainingHours[$h] = $hourlyArrivals[$h];
+            }
+
+            if (empty($remainingHours)) {
+                $isUpcoming = false;
+                $peakHour = array_keys($hourlyArrivals, max($hourlyArrivals))[0];
+                $statusReason = 'No additional peak period predicted for today';
+            } else {
+                $maxVal = max($remainingHours);
+                $peakHour = array_keys($remainingHours, $maxVal)[0];
+                $isUpcoming = true;
+                $statusReason = null;
+            }
+        }
+
+        // Expected Arrivals and Range calculation
+        $predictedArrivals = round($hourlyArrivals[$peakHour], 1);
+        $intPredicted = max(1, (int) round($predictedArrivals));
+        $spread = max(2, (int) round($intPredicted * 0.12));
+        $minArrivals = max(1, $intPredicted - $spread);
+        $maxArrivals = $intPredicted + $spread;
+        if ($minArrivals === $maxArrivals) {
+            $maxArrivals = $minArrivals + 1;
+        }
+
+        $expectedArrivalsFormatted = "{$minArrivals}–{$maxArrivals} students";
+        $peakRisk = self::determinePeakRisk($intPredicted, $normalizedName);
+
+        // Confidence calculation
+        $matchingDaysCount = $selectedDates->count();
+        $confidenceScore = 52;
+        if ($matchingDaysCount >= 4) {
+            $confidenceScore += 18;
+        } elseif ($matchingDaysCount >= 2) {
+            $confidenceScore += 10;
+        }
+        if ($totalTicketCount >= 30) {
+            $confidenceScore += 14;
+        } elseif ($totalTicketCount >= 10) {
+            $confidenceScore += 8;
+        }
+        if ($source === 'recent_same_weekday_history') {
+            $confidenceScore += 8;
+        }
+        $confidenceScore = min(92, max(55, $confidenceScore));
+        $confidenceText = "{$confidenceScore}%";
+
+        $peakTimeFormatted = self::formatHourRange($peakHour);
+        $peakStart = sprintf('%02d:00', $peakHour);
+        $peakEnd = sprintf('%02d:00', $peakHour + 1);
+
+        return [
+            'department_key' => strtolower($normalizedName),
+            'department_name' => $normalizedName,
+            'predicted_peak_start' => $peakStart,
+            'predicted_peak_end' => $peakEnd,
+            'predicted_peak_formatted' => $peakTimeFormatted,
+            'expected_arrivals' => $intPredicted,
+            'expected_arrivals_min' => $minArrivals,
+            'expected_arrivals_max' => $maxArrivals,
+            'expected_arrivals_formatted' => $expectedArrivalsFormatted,
+            'peak_risk' => $peakRisk,
+            'confidence' => $confidenceScore,
+            'confidence_text' => $confidenceText,
+            'historical_pattern' => $pattern,
+            'is_upcoming' => $isUpcoming,
+            'status_reason' => $statusReason,
+            'data_points_used' => $totalTicketCount,
+            'prediction_source' => $source,
+            'is_available' => true,
+        ];
+    }
+
+    /**
+     * Get Peak Hour Predictions for multiple departments.
+     */
+    public function getAllDepartmentPeakPredictions(?array $departmentNames = null, ?Carbon $now = null): array
+    {
+        $departments = $departmentNames ?: $this->getActiveDepartments();
+        $predictions = [];
+        foreach ($departments as $dept) {
+            $predictions[] = $this->getDepartmentPeakPrediction($dept, $now);
+        }
+        return $predictions;
+    }
+
+    /**
+     * Fallback payload for insufficient historical data.
+     */
+    protected function emptyPeakPayload(string $departmentName, string $reason, int $dataPoints = 0): array
+    {
+        return [
+            'department_key' => strtolower($departmentName),
+            'department_name' => $departmentName,
+            'predicted_peak_start' => null,
+            'predicted_peak_end' => null,
+            'predicted_peak_formatted' => 'Peak prediction unavailable — insufficient historical data',
+            'expected_arrivals' => null,
+            'expected_arrivals_min' => null,
+            'expected_arrivals_max' => null,
+            'expected_arrivals_formatted' => 'Unavailable',
+            'peak_risk' => 'LOW',
+            'confidence' => null,
+            'confidence_text' => 'Limited data',
+            'historical_pattern' => $reason,
+            'is_upcoming' => false,
+            'status_reason' => $reason,
+            'data_points_used' => $dataPoints,
+            'prediction_source' => 'insufficient_data',
+            'is_available' => false,
+        ];
+    }
 }

@@ -6,7 +6,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useDisplayBoardData } from '../hooks/useDisplayBoardData'
 import CalendarDateRange from '../components/CalendarDateRange'
-import { getStaffList, registerUser, updateStaff, deleteStaff, getServiceWindows, getDashboardAnalytics, getBusiestDayAnalytics, getDepartmentComparison, getPeakHours, getCustomersServed, getMonitoringData, getActivityLogs, getQueueHistory, getDisplayConfiguration, publishDisplayConfiguration, getPredictedWaitTimes, logout as apiLogout } from '../api'
+import { getStaffList, registerUser, updateStaff, deleteStaff, getServiceWindows, getDashboardAnalytics, getBusiestDayAnalytics, getDepartmentComparison, getPeakHours, getCustomersServed, getMonitoringData, getActivityLogs, getQueueHistory, getDisplayConfiguration, publishDisplayConfiguration, getPredictedWaitTimes, getPeakHourPredictions, logout as apiLogout } from '../api'
 import { DEFAULT_ANNOUNCEMENT_BACKGROUND_COLOR, DEFAULT_ANNOUNCEMENT_TEXT_COLOR, DEFAULT_DATE_TIME_TEXT_COLOR, DEFAULT_DISPLAY_BACKGROUND_COLOR, DEFAULT_DISPLAY_PANEL_COLORS, DEFAULT_NOW_SERVING_BACKGROUND_COLOR, DEFAULT_NOW_SERVING_TEXT_COLOR, DEFAULT_WAITING_QUEUE_COLORS, DEFAULT_WINDOW_TICKET_TEXT_COLOR, DISPLAY_FONT_OPTIONS, DISPLAY_LAYOUT_OPTIONS, DISPLAY_TEXT_SIZE_OPTIONS, ELEMENT_FONT_SIZE_OPTIONS, ELEMENT_FONT_WEIGHT_OPTIONS, DISPLAY_FONT_ELEMENTS, DEFAULT_DISPLAY_FONT_CONTROLS, getColorContrastRatio, getDefaultDisplayBoardConfig, getDisplayBoardConfig, getDisplayWindowOptions, saveDisplayBoardConfig } from '../utils/displayBoardConfig'
 // TODO: fix these import paths to match where these components actually live in your project
 import Analytics from './Analytics'
@@ -451,6 +451,9 @@ function AdminPanel({ user, initialPage = 'dashboard' }) {
   const [predictions, setPredictions] = useState([])
   const [predictionsLoading, setPredictionsLoading] = useState(false)
   const [predictionsError, setPredictionsError] = useState('')
+  const [peakPredictions, setPeakPredictions] = useState([])
+  const [peakPredictionsLoading, setPeakPredictionsLoading] = useState(false)
+  const [peakPredictionsError, setPeakPredictionsError] = useState('')
   const dashboardRequestInFlightRef = useRef(false)
   const dashboardAnalyticsInFlightRef = useRef(false)
   const dashboardMountedRef = useRef(true)
@@ -517,6 +520,7 @@ function AdminPanel({ user, initialPage = 'dashboard' }) {
         () => getDashboardAnalytics(period, startDate, endDate, isDeptAdmin ? userDeptName : null, signal),
         () => getMonitoringData(isDeptAdmin ? userDeptName : null, signal),
         () => getPredictedWaitTimes(isDeptAdmin ? userDeptName : null, signal),
+        () => getPeakHourPredictions(isDeptAdmin ? userDeptName : null, signal),
       ]
       // A synchronous request setup failure should not prevent the other live
       // dashboard responses from being applied.
@@ -530,6 +534,7 @@ function AdminPanel({ user, initialPage = 'dashboard' }) {
       const dashData = valueOf(0)
       const monitoringData = valueOf(1)
       const predictionData = valueOf(2)
+      const peakData = valueOf(3)
       if (Array.isArray(monitoringData)) setQueueWindows(previous => retainEqual(previous, normalizeMonitoringWindows(monitoringData)))
       if (dashData && typeof dashData === 'object') setAnalytics(previous => retainEqual(previous, dashData))
       if (predictionData && (Array.isArray(predictionData?.predictions) || Array.isArray(predictionData?.data))) {
@@ -538,6 +543,15 @@ function AdminPanel({ user, initialPage = 'dashboard' }) {
         setPredictionsError('')
       } else if (results[2].status === 'rejected') {
         setPredictionsError('Failed to load predictions')
+      }
+      if (peakData && (Array.isArray(peakData?.peak_predictions) || Array.isArray(peakData?.predictions) || Array.isArray(peakData?.data))) {
+        const peakList = Array.isArray(peakData.peak_predictions)
+          ? peakData.peak_predictions
+          : (Array.isArray(peakData.predictions) ? peakData.predictions : peakData.data)
+        setPeakPredictions(previous => retainEqual(previous, peakList))
+        setPeakPredictionsError('')
+      } else if (results[3]?.status === 'rejected') {
+        setPeakPredictionsError('Failed to load peak predictions')
       }
       if (Array.isArray(monitoringData)) {
         setCashierWaiting(monitoringData.find(row => row.department === 'Cashier')?.department_waiting ?? 0)
@@ -2202,6 +2216,99 @@ function AdminPanel({ user, initialPage = 'dashboard' }) {
                     <div className="intelligence-loading-state">
                       <span className="material-symbols-outlined intelligence-spinner-icon">sync</span>
                       <p>Calculating live department predictions...</p>
+                    </div>
+                  )}
+                </div>
+              </article>
+
+              <article className="intelligence-card-panel peak-prediction-panel">
+                <div className="intelligence-panel-header">
+                  <div className="intelligence-title-cluster">
+                    <div className="intelligence-icon-avatar peak-icon-avatar">
+                      <span className="material-symbols-outlined">trending_up</span>
+                    </div>
+                    <div>
+                      <h3 className="intelligence-panel-title">Peak Hour Prediction</h3>
+                      <p className="intelligence-panel-subtitle">
+                        Predicts the busiest upcoming time period for each department based on historical queue arrivals and recent queue activity.
+                      </p>
+                    </div>
+                  </div>
+                  <span className="intelligence-live-badge peak-forecast-badge">
+                    <span className="material-symbols-outlined">insights</span>
+                    Arrival Forecast
+                  </span>
+                </div>
+
+                <div className="intelligence-departments-grid">
+                  {peakPredictions && peakPredictions.length > 0 ? (
+                    peakPredictions.map((dept) => {
+                      const risk = String(dept.peak_risk || 'NORMAL').toUpperCase();
+                      const riskKey = risk === 'CRITICAL' ? 'critical' : risk === 'HIGH' ? 'high' : risk === 'NORMAL' ? 'normal' : 'low';
+                      const deptName = getDepartmentDisplayName(dept.department_name);
+
+                      return (
+                        <div key={dept.department_key || dept.department_name} className={`intelligence-dept-card peak-dept-card status-${riskKey}`}>
+                          <div className="dept-card-header">
+                            <div>
+                              <span className="dept-card-sublabel">Department</span>
+                              <h4 className="dept-card-title">{deptName}</h4>
+                            </div>
+                            <span className={`intelligence-status-pill peak-risk-pill status-${riskKey}`}>
+                              {risk} RISK
+                            </span>
+                          </div>
+
+                          <div className="dept-prediction-hero peak-prediction-hero">
+                            <div className="dept-prediction-header-line">
+                              <span className="dept-prediction-caption">Predicted Peak Time</span>
+                              {dept.is_upcoming ? (
+                                <span className="dept-prediction-estimate-badge peak-badge-upcoming">Upcoming Today</span>
+                              ) : (
+                                <span className="dept-prediction-estimate-badge peak-badge-concluded">Concluded</span>
+                              )}
+                            </div>
+                            <div className="dept-prediction-value peak-prediction-time">
+                              {dept.predicted_peak_formatted || 'Unavailable'}
+                            </div>
+                            {dept.status_reason && (
+                              <div className="dept-prediction-reason">
+                                <span className="material-symbols-outlined">info</span>
+                                <span>{dept.status_reason}</span>
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="dept-metrics-table peak-metrics-table">
+                            <div className="dept-metric-box">
+                              <span className="metric-box-label">Expected Queue Volume</span>
+                              <strong className="metric-box-val">{dept.expected_arrivals_formatted || 'N/A'}</strong>
+                              <span className="metric-box-hint">projected arrivals</span>
+                            </div>
+                            <div className="dept-metric-box">
+                              <span className="metric-box-label">Peak Risk</span>
+                              <strong className={`metric-box-val status-text-${riskKey}`}>{risk}</strong>
+                              <span className="metric-box-hint">capacity risk</span>
+                            </div>
+                            <div className="dept-metric-box">
+                              <span className="metric-box-label">Confidence</span>
+                              <strong className="metric-box-val">{dept.confidence_text || `${dept.confidence}%`}</strong>
+                              <span className="metric-box-hint">historical accuracy</span>
+                            </div>
+                            <div className="dept-metric-box peak-pattern-box">
+                              <span className="metric-box-label">Historical Pattern</span>
+                              <span className="pattern-note" title={dept.historical_pattern}>
+                                {dept.historical_pattern || 'Standard pattern'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="intelligence-loading-state">
+                      <span className="material-symbols-outlined intelligence-spinner-icon">sync</span>
+                      <p>Calculating peak hour predictions...</p>
                     </div>
                   )}
                 </div>
