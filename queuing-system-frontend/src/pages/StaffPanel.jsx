@@ -24,6 +24,37 @@ function RecentActivity({ activities = [] }) {
   )
 }
 
+function getPhilippineTodayString() {
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila' }).format(new Date())
+  } catch {
+    return new Date().toISOString().slice(0, 10)
+  }
+}
+
+function renderStatusBadge(status) {
+  const s = String(status || '').trim().toLowerCase()
+  let label = 'Completed'
+  let badgeClass = 'status-completed'
+
+  if (s.includes('cancel') || s.includes('skip') || s.includes('no show')) {
+    label = 'Cancelled / No Show'
+    badgeClass = 'status-cancelled'
+  } else if (s === 'serving') {
+    label = 'Serving'
+    badgeClass = 'status-serving'
+  } else {
+    label = status || 'Completed'
+    badgeClass = 'status-completed'
+  }
+
+  return (
+    <span className={`staff-history-status-badge ${badgeClass}`}>
+      {label}
+    </span>
+  )
+}
+
 function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' }) {
   const isRegistrarStaff = user.role === 'staff' && String(user.position || '').toLowerCase() === 'registrar'
   const hasWindowControls = isRegistrarStaff
@@ -56,8 +87,8 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
   const [historyTransactions, setHistoryTransactions] = useState([])
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyPeriod, setHistoryPeriod] = useState('today')
-  const [customStartDate, setCustomStartDate] = useState('')
-  const [customEndDate, setCustomEndDate] = useState('')
+  const [customStartDate, setCustomStartDate] = useState(getPhilippineTodayString())
+  const [customEndDate, setCustomEndDate] = useState(getPhilippineTodayString())
   const [historySearch, setHistorySearch] = useState('')
   const [historySearchInput, setHistorySearchInput] = useState('')
   const [historyPage, setHistoryPage] = useState(1)
@@ -71,6 +102,18 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
     to: 0,
   })
   const [historyError, setHistoryError] = useState('')
+
+  const historyFilterRef = useRef({
+    period: 'today',
+    startDate: getPhilippineTodayString(),
+    endDate: getPhilippineTodayString(),
+    search: '',
+    page: 1,
+    perPage: 10,
+  })
+  const historyRequestIdRef = useRef(0)
+  const historyAbortRef = useRef(null)
+  const loadHistoryRef = useRef(null)
 
   const controlRef = useRef(null)
   const [operational, setOperational] = useState(false)
@@ -237,69 +280,129 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
     return `${m}m ${s}s`
   }
 
-  const fetchStaffHistory = async (overrides = {}) => {
-    const period = overrides.period !== undefined ? overrides.period : historyPeriod
-    const startDate = overrides.startDate !== undefined ? overrides.startDate : (period === 'custom' ? customStartDate : null)
-    const endDate = overrides.endDate !== undefined ? overrides.endDate : (period === 'custom' ? customEndDate : null)
-    const search = overrides.search !== undefined ? overrides.search : historySearch
-    const page = overrides.page !== undefined ? overrides.page : historyPage
-    const perPage = overrides.perPage !== undefined ? overrides.perPage : historyPerPage
+  const loadHistory = async ({ isSilent = false, overrides = {} } = {}) => {
+    if (!operational || isMiniView) return
 
-    setHistoryLoading(true)
-    setHistoryError('')
+    const currentParams = {
+      ...historyFilterRef.current,
+      ...overrides,
+    }
+    historyFilterRef.current = currentParams
+
+    const requestId = ++historyRequestIdRef.current
+
+    if (historyAbortRef.current) {
+      historyAbortRef.current.abort()
+    }
+    const controller = new AbortController()
+    historyAbortRef.current = controller
+
+    if (!isSilent) {
+      setHistoryLoading(true)
+      setHistoryError('')
+    }
+
     try {
-      const res = await getStaffQueueHistory({
-        period,
-        startDate,
-        endDate,
-        search,
-        page,
-        perPage,
-      })
+      const res = await getStaffQueueHistory(
+        {
+          period: currentParams.period,
+          startDate: currentParams.period === 'custom' ? currentParams.startDate : null,
+          endDate: currentParams.period === 'custom' ? currentParams.endDate : null,
+          search: currentParams.search,
+          page: currentParams.page,
+          perPage: currentParams.perPage,
+        },
+        controller.signal
+      )
+
+      if (requestId !== historyRequestIdRef.current || controller.signal.aborted) {
+        return
+      }
+
       if (res && Array.isArray(res.data)) {
         setHistoryTransactions(res.data)
         setHistoryPagination({
           total: Number(res.total ?? 0),
-          currentPage: Number(res.current_page ?? page),
+          currentPage: Number(res.current_page ?? currentParams.page),
           lastPage: Number(res.last_page ?? 1),
-          perPage: Number(res.per_page ?? perPage),
+          perPage: Number(res.per_page ?? currentParams.perPage),
           from: Number(res.from ?? (res.data.length ? 1 : 0)),
           to: Number(res.to ?? res.data.length),
         })
       } else {
         setHistoryTransactions([])
       }
+      setHistoryError('')
     } catch (err) {
-      setHistoryError(err?.message || 'Failed to load queue history.')
+      if (controller.signal.aborted || requestId !== historyRequestIdRef.current) {
+        return
+      }
+      if (!isSilent) {
+        setHistoryError(err?.message || 'Failed to load queue history.')
+      }
     } finally {
-      setHistoryLoading(false)
+      if (requestId === historyRequestIdRef.current && !controller.signal.aborted) {
+        if (!isSilent) {
+          setHistoryLoading(false)
+        }
+      }
     }
   }
 
-  const silentRefreshHistory = async () => {
-    try {
-      const res = await getStaffQueueHistory({
-        period: historyPeriod,
-        startDate: historyPeriod === 'custom' ? customStartDate : null,
-        endDate: historyPeriod === 'custom' ? customEndDate : null,
-        search: historySearch,
-        page: historyPage,
-        perPage: historyPerPage,
-      })
-      if (res && Array.isArray(res.data)) {
-        setHistoryTransactions(res.data)
-        setHistoryPagination({
-          total: Number(res.total ?? 0),
-          currentPage: Number(res.current_page ?? historyPage),
-          lastPage: Number(res.last_page ?? 1),
-          perPage: Number(res.per_page ?? historyPerPage),
-          from: Number(res.from ?? (res.data.length ? 1 : 0)),
-          to: Number(res.to ?? res.data.length),
-        })
-      }
-    } catch {
-      // Ignore background errors
+  loadHistoryRef.current = loadHistory
+
+  const handleSelectPeriod = (newPeriod) => {
+    if (historyPeriod === newPeriod && newPeriod !== 'custom') return
+    setHistoryPeriod(newPeriod)
+    setHistoryPage(1)
+    const effectiveStart = customStartDate || getPhilippineTodayString()
+    const effectiveEnd = customEndDate || effectiveStart
+    const overrides = {
+      period: newPeriod,
+      page: 1,
+      startDate: newPeriod === 'custom' ? effectiveStart : null,
+      endDate: newPeriod === 'custom' ? effectiveEnd : null,
     }
+    loadHistory({ isSilent: false, overrides })
+  }
+
+  const handleApplyCustomDates = (e) => {
+    if (e) e.preventDefault()
+    setHistoryPage(1)
+    const effectiveStart = customStartDate || getPhilippineTodayString()
+    const effectiveEnd = customEndDate || effectiveStart
+    const overrides = {
+      period: 'custom',
+      startDate: effectiveStart,
+      endDate: effectiveEnd,
+      page: 1,
+    }
+    loadHistory({ isSilent: false, overrides })
+  }
+
+  const handleSearchSubmit = () => {
+    const trimmed = historySearchInput.trim()
+    setHistorySearch(trimmed)
+    setHistoryPage(1)
+    loadHistory({ isSilent: false, overrides: { search: trimmed, page: 1 } })
+  }
+
+  const handleSearchClear = () => {
+    setHistorySearchInput('')
+    setHistorySearch('')
+    setHistoryPage(1)
+    loadHistory({ isSilent: false, overrides: { search: '', page: 1 } })
+  }
+
+  const handlePageChange = (newPage) => {
+    setHistoryPage(newPage)
+    loadHistory({ isSilent: false, overrides: { page: newPage } })
+  }
+
+  const handlePerPageChange = (newPerPage) => {
+    setHistoryPerPage(newPerPage)
+    setHistoryPage(1)
+    loadHistory({ isSilent: false, overrides: { perPage: newPerPage, page: 1 } })
   }
 
   const refreshStaffData = async () => {
@@ -345,7 +448,7 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
       setWindowStatusLoading(false)
       setMessage(previous => previous === 'Request timed out. Please try again.' ? '' : previous)
       if (!isMiniView) {
-        silentRefreshHistory()
+        loadHistoryRef.current?.({ isSilent: true })
       }
     } catch (err) {
       if (!controller.signal.aborted) {
@@ -364,9 +467,15 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
     if (!operational) return
     refreshStaffData()
     const interval = setInterval(() => refreshRef.current?.(), 5000)
-    const onFocus = () => refreshRef.current?.()
+    const onFocus = () => {
+      refreshRef.current?.()
+      if (!isMiniView) loadHistoryRef.current?.({ isSilent: true })
+    }
     const onQueueChange = event => {
-      if (event.type !== 'storage' || event.key === 'queue-data-changed') refreshRef.current?.()
+      if (event.type !== 'storage' || event.key === 'queue-data-changed') {
+        refreshRef.current?.()
+        if (!isMiniView) loadHistoryRef.current?.({ isSilent: true })
+      }
     }
     window.addEventListener('focus', onFocus)
     window.addEventListener('queue-data-changed', onQueueChange)
@@ -377,13 +486,14 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
       window.removeEventListener('queue-data-changed', onQueueChange)
       window.removeEventListener('storage', onQueueChange)
       refreshControllerRef.current?.abort()
+      historyAbortRef.current?.abort()
     }
-  }, [serviceType, user.position, operational])
+  }, [serviceType, user.position, operational, isMiniView])
 
   useEffect(() => {
     if (!operational || isMiniView) return
-    fetchStaffHistory()
-  }, [operational, isMiniView, historyPeriod, historySearch, historyPage, historyPerPage])
+    loadHistory({ isSilent: false })
+  }, [operational, isMiniView])
 
   const handleWindowToggle = () => {
     if (!isRegistrarStaff) return
@@ -425,7 +535,7 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
         const nextWaitingTickets = waitingTickets.filter(ticketItem => ticketItem.ticket_id !== data.ticket.ticket_id)
         setWaitingTickets(nextWaitingTickets)
         setWaitingCount(nextWaitingTickets.length)
-        if (!isMiniView) fetchStaffHistory()
+        if (!isMiniView) loadHistoryRef.current?.({ isSilent: true })
       } else {
         setMessage(data.message || 'Unable to call the next ticket. Please try again.')
         setCurrentTicket(null)
@@ -450,7 +560,7 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
       if (data.ticket) {
         setCurrentTicket(null)
         setTransaction(null)
-        if (!isMiniView) fetchStaffHistory()
+        if (!isMiniView) loadHistoryRef.current?.({ isSilent: true })
       } else {
         setMessage(data.message || 'Error completing ticket')
       }
@@ -473,7 +583,7 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
       if (data.ticket) {
         setCurrentTicket(null)
         setTransaction(null)
-        if (!isMiniView) fetchStaffHistory()
+        if (!isMiniView) loadHistoryRef.current?.({ isSilent: true })
       } else {
         setMessage(data.message || 'Unable to mark the ticket as no show.')
       }
@@ -698,23 +808,13 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
                 </p>
               </div>
             </div>
-            <button
-              type="button"
-              className="staff-history-refresh-btn"
-              onClick={() => fetchStaffHistory()}
-              disabled={historyLoading}
-              title="Refresh queue history"
-            >
-              <span className={`material-symbols-outlined ${historyLoading ? 'spin-icon' : ''}`}>refresh</span>
-              <span>Refresh</span>
-            </button>
           </div>
 
           {historyError && (
             <div className="staff-history-error-banner">
               <span className="material-symbols-outlined">warning</span>
               <span>{historyError}</span>
-              <button type="button" onClick={() => fetchStaffHistory()}>Retry</button>
+              <button type="button" onClick={() => loadHistory({ isSilent: false })}>Retry</button>
             </div>
           )}
 
@@ -725,28 +825,28 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
                 <button
                   type="button"
                   className={`staff-filter-pill ${historyPeriod === 'today' ? 'active' : ''}`}
-                  onClick={() => { setHistoryPeriod('today'); setHistoryPage(1); }}
+                  onClick={() => handleSelectPeriod('today')}
                 >
                   Today
                 </button>
                 <button
                   type="button"
                   className={`staff-filter-pill ${historyPeriod === 'week' ? 'active' : ''}`}
-                  onClick={() => { setHistoryPeriod('week'); setHistoryPage(1); }}
+                  onClick={() => handleSelectPeriod('week')}
                 >
                   This Week
                 </button>
                 <button
                   type="button"
                   className={`staff-filter-pill ${historyPeriod === 'month' ? 'active' : ''}`}
-                  onClick={() => { setHistoryPeriod('month'); setHistoryPage(1); }}
+                  onClick={() => handleSelectPeriod('month')}
                 >
                   This Month
                 </button>
                 <button
                   type="button"
                   className={`staff-filter-pill ${historyPeriod === 'custom' ? 'active' : ''}`}
-                  onClick={() => { setHistoryPeriod('custom'); setHistoryPage(1); }}
+                  onClick={() => handleSelectPeriod('custom')}
                 >
                   Custom Date
                 </button>
@@ -755,11 +855,7 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
               {historyPeriod === 'custom' && (
                 <form
                   className="staff-history-custom-dates"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    setHistoryPage(1);
-                    fetchStaffHistory({ period: 'custom', startDate: customStartDate, endDate: customEndDate, page: 1 });
-                  }}
+                  onSubmit={handleApplyCustomDates}
                 >
                   <div className="staff-date-field">
                     <label htmlFor="staff-history-start">From:</label>
@@ -798,8 +894,7 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
                   onChange={(e) => setHistorySearchInput(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
-                      setHistorySearch(historySearchInput.trim());
-                      setHistoryPage(1);
+                      handleSearchSubmit();
                     }
                   }}
                   className="staff-search-input"
@@ -809,11 +904,7 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
                   <button
                     type="button"
                     className="staff-search-clear-btn"
-                    onClick={() => {
-                      setHistorySearchInput('');
-                      setHistorySearch('');
-                      setHistoryPage(1);
-                    }}
+                    onClick={handleSearchClear}
                     aria-label="Clear search"
                   >
                     <span className="material-symbols-outlined">close</span>
@@ -823,10 +914,7 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
               <button
                 type="button"
                 className="staff-search-btn"
-                onClick={() => {
-                  setHistorySearch(historySearchInput.trim());
-                  setHistoryPage(1);
-                }}
+                onClick={handleSearchSubmit}
               >
                 Search
               </button>
@@ -838,22 +926,17 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
               <thead>
                 <tr>
                   <th>Queue Number</th>
-                  <th>Student / Client Name</th>
-                  <th>Department</th>
+                  <th>Client / Student Name</th>
                   <th>Service / Transaction</th>
-                  <th>Window Number</th>
                   <th>Date</th>
-                  <th>Time Started</th>
-                  <th>Time Completed</th>
-                  <th>Waiting Time</th>
-                  <th>Service Time</th>
+                  <th>Time</th>
                   <th>Status</th>
                 </tr>
               </thead>
               <tbody>
                 {historyLoading ? (
                   <tr className="staff-history-loading-row">
-                    <td colSpan="11">
+                    <td colSpan="6">
                       <div className="staff-history-loading-state">
                         <span className="material-symbols-outlined spin-icon">sync</span>
                         <span>Loading queue history...</span>
@@ -862,7 +945,7 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
                   </tr>
                 ) : historyTransactions.length === 0 ? (
                   <tr className="staff-history-empty-row">
-                    <td colSpan="11">
+                    <td colSpan="6">
                       <div className="staff-history-empty-state">
                         <span className="material-symbols-outlined">inbox</span>
                         <strong>No queue history found</strong>
@@ -878,28 +961,21 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
                   historyTransactions.map((tx) => (
                     <tr key={tx.transaction_id || tx.ticket_id} className="staff-history-row">
                       <td className="staff-tx-queue-number">
-                        <strong>{tx.queue_number}</strong>
+                        <strong>{tx.queue_number || '—'}</strong>
                       </td>
                       <td className="staff-tx-client">
-                        <div className="staff-client-name">{tx.student_name || '—'}</div>
+                        <div className="staff-client-name">
+                          {tx.student_name && tx.student_name !== '—' ? tx.student_name : 'N/A'}
+                        </div>
                         {tx.student_number && tx.student_number !== 'Guest' && tx.student_number !== tx.student_name && (
                           <small className="staff-client-sub">{`ID: ${tx.student_number}`}</small>
                         )}
                       </td>
-                      <td>{tx.department}</td>
-                      <td>{tx.service}</td>
+                      <td>{tx.service || '—'}</td>
+                      <td className="staff-tx-date">{tx.date || '—'}</td>
+                      <td className="staff-tx-time">{tx.time_started || tx.time_completed || '—'}</td>
                       <td>
-                        <span className="staff-window-badge">{tx.window_number}</span>
-                      </td>
-                      <td>{tx.date}</td>
-                      <td>{tx.time_started}</td>
-                      <td>{tx.time_completed}</td>
-                      <td className="staff-tx-duration">{tx.waiting_time}</td>
-                      <td className="staff-tx-duration">{tx.service_time}</td>
-                      <td>
-                        <span className={`staff-history-status-badge status-${String(tx.status || '').toLowerCase()}`}>
-                          {tx.status}
-                        </span>
+                        {renderStatusBadge(tx.status)}
                       </td>
                     </tr>
                   ))
@@ -925,10 +1001,7 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
                 <select
                   id="staff-per-page"
                   value={historyPerPage}
-                  onChange={(e) => {
-                    setHistoryPerPage(Number(e.target.value));
-                    setHistoryPage(1);
-                  }}
+                  onChange={(e) => handlePerPageChange(Number(e.target.value))}
                   className="staff-per-page-select"
                 >
                   <option value={10}>10</option>
@@ -941,7 +1014,7 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
                 type="button"
                 className="staff-pagination-nav-btn"
                 disabled={historyPage <= 1 || historyLoading}
-                onClick={() => setHistoryPage((p) => Math.max(1, p - 1))}
+                onClick={() => handlePageChange(Math.max(1, historyPage - 1))}
                 aria-label="Previous page"
               >
                 <span className="material-symbols-outlined">chevron_left</span>
@@ -956,7 +1029,7 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
                 type="button"
                 className="staff-pagination-nav-btn"
                 disabled={historyPage >= historyPagination.lastPage || historyLoading}
-                onClick={() => setHistoryPage((p) => Math.min(historyPagination.lastPage, p + 1))}
+                onClick={() => handlePageChange(Math.min(historyPagination.lastPage, historyPage + 1))}
                 aria-label="Next page"
               >
                 Next

@@ -15196,7 +15196,7 @@ body:has(.staff-mini-window),
 
 .staff-history-table {
   width: 100%;
-  min-width: 1060px;
+  min-width: 780px;
   border-collapse: collapse;
   text-align: left;
   font-size: 0.88rem;
@@ -15269,6 +15269,14 @@ body:has(.staff-mini-window),
   white-space: nowrap;
 }
 
+.staff-tx-date,
+.staff-tx-time {
+  font-size: 0.86rem;
+  color: #334155;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 .staff-history-status-badge {
   display: inline-flex;
   align-items: center;
@@ -15294,7 +15302,9 @@ body:has(.staff-mini-window),
   border: 1px solid #fde047;
 }
 
-.staff-history-status-badge.status-skipped {
+.staff-history-status-badge.status-skipped,
+.staff-history-status-badge.status-cancelled,
+.staff-history-status-badge.status-cancelled-no-show {
   background: #fef2f2;
   color: #b91c1c;
   border: 1px solid #fecaca;

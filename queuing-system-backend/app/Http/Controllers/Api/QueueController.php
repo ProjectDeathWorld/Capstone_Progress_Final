@@ -990,15 +990,20 @@ class QueueController extends Controller
         $query = ServiceTransaction::where('staff_id', $staffId)
             ->with('ticket');
 
-        if ($period === 'custom' && $startDate) {
-            $start = Carbon::parse($startDate, 'Asia/Manila')->startOfDay();
-            $end = Carbon::parse($endDate ?: $startDate, 'Asia/Manila')->endOfDay();
+        if ($period === 'custom') {
+            $effectiveStart = $startDate ?: Carbon::today('Asia/Manila')->toDateString();
+            $effectiveEnd = $endDate ?: $effectiveStart;
+            $start = Carbon::parse($effectiveStart, 'Asia/Manila')->startOfDay();
+            $end = Carbon::parse($effectiveEnd, 'Asia/Manila')->endOfDay();
             $query->where(function ($q) use ($start, $end) {
                 $q->whereBetween('start_time', [$start->copy()->utc(), $end->copy()->utc()])
                   ->orWhere(function ($sub) use ($start, $end) {
                       $sub->whereNull('start_time')
-                          ->whereHas('ticket', function ($tq) use ($start, $end) {
-                              $tq->whereBetween('created_at', [$start->copy()->utc(), $end->copy()->utc()]);
+                          ->where(function ($inner) use ($start, $end) {
+                              $inner->whereBetween('end_time', [$start->copy()->utc(), $end->copy()->utc()])
+                                  ->orWhereHas('ticket', function ($tq) use ($start, $end) {
+                                      $tq->whereBetween('created_at', [$start->copy()->utc(), $end->copy()->utc()]);
+                                  });
                           });
                   });
             });
@@ -1009,8 +1014,11 @@ class QueueController extends Controller
                 $q->whereBetween('start_time', [$start->copy()->utc(), $end->copy()->utc()])
                   ->orWhere(function ($sub) use ($start, $end) {
                       $sub->whereNull('start_time')
-                          ->whereHas('ticket', function ($tq) use ($start, $end) {
-                              $tq->whereBetween('created_at', [$start->copy()->utc(), $end->copy()->utc()]);
+                          ->where(function ($inner) use ($start, $end) {
+                              $inner->whereBetween('end_time', [$start->copy()->utc(), $end->copy()->utc()])
+                                  ->orWhereHas('ticket', function ($tq) use ($start, $end) {
+                                      $tq->whereBetween('created_at', [$start->copy()->utc(), $end->copy()->utc()]);
+                                  });
                           });
                   });
             });
@@ -1021,8 +1029,11 @@ class QueueController extends Controller
                 $q->whereBetween('start_time', [$start->copy()->utc(), $end->copy()->utc()])
                   ->orWhere(function ($sub) use ($start, $end) {
                       $sub->whereNull('start_time')
-                          ->whereHas('ticket', function ($tq) use ($start, $end) {
-                              $tq->whereBetween('created_at', [$start->copy()->utc(), $end->copy()->utc()]);
+                          ->where(function ($inner) use ($start, $end) {
+                              $inner->whereBetween('end_time', [$start->copy()->utc(), $end->copy()->utc()])
+                                  ->orWhereHas('ticket', function ($tq) use ($start, $end) {
+                                      $tq->whereBetween('created_at', [$start->copy()->utc(), $end->copy()->utc()]);
+                                  });
                           });
                   });
             });
@@ -1033,8 +1044,11 @@ class QueueController extends Controller
                 $q->whereBetween('start_time', [$start->copy()->utc(), $end->copy()->utc()])
                   ->orWhere(function ($sub) use ($start, $end) {
                       $sub->whereNull('start_time')
-                          ->whereHas('ticket', function ($tq) use ($start, $end) {
-                              $tq->whereBetween('created_at', [$start->copy()->utc(), $end->copy()->utc()]);
+                          ->where(function ($inner) use ($start, $end) {
+                              $inner->whereBetween('end_time', [$start->copy()->utc(), $end->copy()->utc()])
+                                  ->orWhereHas('ticket', function ($tq) use ($start, $end) {
+                                      $tq->whereBetween('created_at', [$start->copy()->utc(), $end->copy()->utc()]);
+                                  });
                           });
                   });
             });
@@ -1137,12 +1151,12 @@ class QueueController extends Controller
             $status = 'Completed';
             if ($ticketStatus === 'done' || $ticketStatus === 'completed' || $transaction->end_time) {
                 if ($transaction->remarks === 'Skip / No Show' || $ticketStatus === 'cancelled') {
-                    $status = 'Skipped';
+                    $status = 'Cancelled / No Show';
                 } else {
                     $status = 'Completed';
                 }
             } elseif ($ticketStatus === 'cancelled' || $transaction->remarks === 'Skip / No Show') {
-                $status = 'Skipped';
+                $status = 'Cancelled / No Show';
             } elseif ($ticketStatus === 'serving' || ($transaction->start_time && !$transaction->end_time)) {
                 $status = 'Serving';
             } else {
