@@ -3,7 +3,7 @@ import { useState, useEffect, useRef } from 'react'
 import { announceStaffReady, handoffStaffWindow, openStaffMiniWindow, restoreStaffWindow, withStaffWindowLock } from '../utils/staffMiniWindow'
 import { createStaffViewControl } from '../utils/staffViewControl'
 import { attachMiniWindowDrag } from '../utils/staffMiniDrag'
-import { callNextTicket, completeTicket, cancelTicket, getWaitingTickets, getCurrentStaffTicket, getCurrentStaffWindow, setAssignedWindowStatus } from '../api'
+import { callNextTicket, completeTicket, cancelTicket, getWaitingTickets, getCurrentStaffTicket, getCurrentStaffWindow, setAssignedWindowStatus, getStaffQueueHistory } from '../api'
 import { getTicketNumber } from '../utils/queueNumber'
 
 function isGuestCustomer(studentNumber) {
@@ -52,6 +52,25 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
   const handoffCleanupRef = useRef(null)
   const handoffPendingRef = useRef(false)
   const [handoffPending, setHandoffPending] = useState(false)
+
+  const [historyTransactions, setHistoryTransactions] = useState([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyPeriod, setHistoryPeriod] = useState('today')
+  const [customStartDate, setCustomStartDate] = useState('')
+  const [customEndDate, setCustomEndDate] = useState('')
+  const [historySearch, setHistorySearch] = useState('')
+  const [historySearchInput, setHistorySearchInput] = useState('')
+  const [historyPage, setHistoryPage] = useState(1)
+  const [historyPerPage, setHistoryPerPage] = useState(10)
+  const [historyPagination, setHistoryPagination] = useState({
+    total: 0,
+    currentPage: 1,
+    lastPage: 1,
+    perPage: 10,
+    from: 0,
+    to: 0,
+  })
+  const [historyError, setHistoryError] = useState('')
 
   const controlRef = useRef(null)
   const [operational, setOperational] = useState(false)
@@ -218,6 +237,71 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
     return `${m}m ${s}s`
   }
 
+  const fetchStaffHistory = async (overrides = {}) => {
+    const period = overrides.period !== undefined ? overrides.period : historyPeriod
+    const startDate = overrides.startDate !== undefined ? overrides.startDate : (period === 'custom' ? customStartDate : null)
+    const endDate = overrides.endDate !== undefined ? overrides.endDate : (period === 'custom' ? customEndDate : null)
+    const search = overrides.search !== undefined ? overrides.search : historySearch
+    const page = overrides.page !== undefined ? overrides.page : historyPage
+    const perPage = overrides.perPage !== undefined ? overrides.perPage : historyPerPage
+
+    setHistoryLoading(true)
+    setHistoryError('')
+    try {
+      const res = await getStaffQueueHistory({
+        period,
+        startDate,
+        endDate,
+        search,
+        page,
+        perPage,
+      })
+      if (res && Array.isArray(res.data)) {
+        setHistoryTransactions(res.data)
+        setHistoryPagination({
+          total: Number(res.total ?? 0),
+          currentPage: Number(res.current_page ?? page),
+          lastPage: Number(res.last_page ?? 1),
+          perPage: Number(res.per_page ?? perPage),
+          from: Number(res.from ?? (res.data.length ? 1 : 0)),
+          to: Number(res.to ?? res.data.length),
+        })
+      } else {
+        setHistoryTransactions([])
+      }
+    } catch (err) {
+      setHistoryError(err?.message || 'Failed to load queue history.')
+    } finally {
+      setHistoryLoading(false)
+    }
+  }
+
+  const silentRefreshHistory = async () => {
+    try {
+      const res = await getStaffQueueHistory({
+        period: historyPeriod,
+        startDate: historyPeriod === 'custom' ? customStartDate : null,
+        endDate: historyPeriod === 'custom' ? customEndDate : null,
+        search: historySearch,
+        page: historyPage,
+        perPage: historyPerPage,
+      })
+      if (res && Array.isArray(res.data)) {
+        setHistoryTransactions(res.data)
+        setHistoryPagination({
+          total: Number(res.total ?? 0),
+          currentPage: Number(res.current_page ?? historyPage),
+          lastPage: Number(res.last_page ?? 1),
+          perPage: Number(res.per_page ?? historyPerPage),
+          from: Number(res.from ?? (res.data.length ? 1 : 0)),
+          to: Number(res.to ?? res.data.length),
+        })
+      }
+    } catch {
+      // Ignore background errors
+    }
+  }
+
   const refreshStaffData = async () => {
     if ((!controlRef.current?.active()) || refreshInFlightRef.current || actionLockRef.current) return
     refreshInFlightRef.current = true
@@ -260,6 +344,9 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
       setCurrentTicketLoading(false)
       setWindowStatusLoading(false)
       setMessage(previous => previous === 'Request timed out. Please try again.' ? '' : previous)
+      if (!isMiniView) {
+        silentRefreshHistory()
+      }
     } catch (err) {
       if (!controller.signal.aborted) {
         setDepartmentAccessible(false)
@@ -292,6 +379,11 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
       refreshControllerRef.current?.abort()
     }
   }, [serviceType, user.position, operational])
+
+  useEffect(() => {
+    if (!operational || isMiniView) return
+    fetchStaffHistory()
+  }, [operational, isMiniView, historyPeriod, historySearch, historyPage, historyPerPage])
 
   const handleWindowToggle = () => {
     if (!isRegistrarStaff) return
@@ -333,6 +425,7 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
         const nextWaitingTickets = waitingTickets.filter(ticketItem => ticketItem.ticket_id !== data.ticket.ticket_id)
         setWaitingTickets(nextWaitingTickets)
         setWaitingCount(nextWaitingTickets.length)
+        if (!isMiniView) fetchStaffHistory()
       } else {
         setMessage(data.message || 'Unable to call the next ticket. Please try again.')
         setCurrentTicket(null)
@@ -357,6 +450,7 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
       if (data.ticket) {
         setCurrentTicket(null)
         setTransaction(null)
+        if (!isMiniView) fetchStaffHistory()
       } else {
         setMessage(data.message || 'Error completing ticket')
       }
@@ -379,6 +473,7 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
       if (data.ticket) {
         setCurrentTicket(null)
         setTransaction(null)
+        if (!isMiniView) fetchStaffHistory()
       } else {
         setMessage(data.message || 'Unable to mark the ticket as no show.')
       }
@@ -587,8 +682,289 @@ function StaffPanel({ user, onLogout, logoutPending = false, logoutError = '' })
               ))
             )}
           </div>
-          </div>
         </div>
+      </div>
+
+        <section className="staff-queue-history-section" aria-label="Queue History">
+          <div className="staff-queue-history-header">
+            <div className="staff-queue-history-title-group">
+              <div className="staff-queue-history-title-icon">
+                <span className="material-symbols-outlined">history</span>
+              </div>
+              <div>
+                <h2 className="staff-queue-history-title">QUEUE HISTORY</h2>
+                <p className="staff-queue-history-subtitle">
+                  Your handled queue transactions
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              className="staff-history-refresh-btn"
+              onClick={() => fetchStaffHistory()}
+              disabled={historyLoading}
+              title="Refresh queue history"
+            >
+              <span className={`material-symbols-outlined ${historyLoading ? 'spin-icon' : ''}`}>refresh</span>
+              <span>Refresh</span>
+            </button>
+          </div>
+
+          {historyError && (
+            <div className="staff-history-error-banner">
+              <span className="material-symbols-outlined">warning</span>
+              <span>{historyError}</span>
+              <button type="button" onClick={() => fetchStaffHistory()}>Retry</button>
+            </div>
+          )}
+
+          <div className="staff-history-controls">
+            <div className="staff-history-filters">
+              <span className="staff-history-filter-label">Filter:</span>
+              <div className="staff-history-pill-group">
+                <button
+                  type="button"
+                  className={`staff-filter-pill ${historyPeriod === 'today' ? 'active' : ''}`}
+                  onClick={() => { setHistoryPeriod('today'); setHistoryPage(1); }}
+                >
+                  Today
+                </button>
+                <button
+                  type="button"
+                  className={`staff-filter-pill ${historyPeriod === 'week' ? 'active' : ''}`}
+                  onClick={() => { setHistoryPeriod('week'); setHistoryPage(1); }}
+                >
+                  This Week
+                </button>
+                <button
+                  type="button"
+                  className={`staff-filter-pill ${historyPeriod === 'month' ? 'active' : ''}`}
+                  onClick={() => { setHistoryPeriod('month'); setHistoryPage(1); }}
+                >
+                  This Month
+                </button>
+                <button
+                  type="button"
+                  className={`staff-filter-pill ${historyPeriod === 'custom' ? 'active' : ''}`}
+                  onClick={() => { setHistoryPeriod('custom'); setHistoryPage(1); }}
+                >
+                  Custom Date
+                </button>
+              </div>
+
+              {historyPeriod === 'custom' && (
+                <form
+                  className="staff-history-custom-dates"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    setHistoryPage(1);
+                    fetchStaffHistory({ period: 'custom', startDate: customStartDate, endDate: customEndDate, page: 1 });
+                  }}
+                >
+                  <div className="staff-date-field">
+                    <label htmlFor="staff-history-start">From:</label>
+                    <input
+                      id="staff-history-start"
+                      type="date"
+                      value={customStartDate}
+                      onChange={(e) => setCustomStartDate(e.target.value)}
+                      className="staff-date-input"
+                    />
+                  </div>
+                  <div className="staff-date-field">
+                    <label htmlFor="staff-history-end">To:</label>
+                    <input
+                      id="staff-history-end"
+                      type="date"
+                      value={customEndDate}
+                      onChange={(e) => setCustomEndDate(e.target.value)}
+                      className="staff-date-input"
+                    />
+                  </div>
+                  <button type="submit" className="staff-date-apply-btn">
+                    Apply
+                  </button>
+                </form>
+              )}
+            </div>
+
+            <div className="staff-history-search-bar">
+              <div className="staff-search-input-wrap">
+                <span className="material-symbols-outlined staff-search-icon">search</span>
+                <input
+                  type="text"
+                  placeholder="Search Queue # or Client Name..."
+                  value={historySearchInput}
+                  onChange={(e) => setHistorySearchInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      setHistorySearch(historySearchInput.trim());
+                      setHistoryPage(1);
+                    }
+                  }}
+                  className="staff-search-input"
+                  aria-label="Search by Queue number or client name"
+                />
+                {historySearchInput && (
+                  <button
+                    type="button"
+                    className="staff-search-clear-btn"
+                    onClick={() => {
+                      setHistorySearchInput('');
+                      setHistorySearch('');
+                      setHistoryPage(1);
+                    }}
+                    aria-label="Clear search"
+                  >
+                    <span className="material-symbols-outlined">close</span>
+                  </button>
+                )}
+              </div>
+              <button
+                type="button"
+                className="staff-search-btn"
+                onClick={() => {
+                  setHistorySearch(historySearchInput.trim());
+                  setHistoryPage(1);
+                }}
+              >
+                Search
+              </button>
+            </div>
+          </div>
+
+          <div className="staff-history-table-container">
+            <table className="staff-history-table">
+              <thead>
+                <tr>
+                  <th>Queue Number</th>
+                  <th>Student / Client Name</th>
+                  <th>Department</th>
+                  <th>Service / Transaction</th>
+                  <th>Window Number</th>
+                  <th>Date</th>
+                  <th>Time Started</th>
+                  <th>Time Completed</th>
+                  <th>Waiting Time</th>
+                  <th>Service Time</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {historyLoading ? (
+                  <tr className="staff-history-loading-row">
+                    <td colSpan="11">
+                      <div className="staff-history-loading-state">
+                        <span className="material-symbols-outlined spin-icon">sync</span>
+                        <span>Loading queue history...</span>
+                      </div>
+                    </td>
+                  </tr>
+                ) : historyTransactions.length === 0 ? (
+                  <tr className="staff-history-empty-row">
+                    <td colSpan="11">
+                      <div className="staff-history-empty-state">
+                        <span className="material-symbols-outlined">inbox</span>
+                        <strong>No queue history found</strong>
+                        <p>
+                          {historySearch
+                            ? `No transactions matched "${historySearch}".`
+                            : 'No transactions recorded for this period.'}
+                        </p>
+                      </div>
+                    </td>
+                  </tr>
+                ) : (
+                  historyTransactions.map((tx) => (
+                    <tr key={tx.transaction_id || tx.ticket_id} className="staff-history-row">
+                      <td className="staff-tx-queue-number">
+                        <strong>{tx.queue_number}</strong>
+                      </td>
+                      <td className="staff-tx-client">
+                        <div className="staff-client-name">{tx.student_name || '—'}</div>
+                        {tx.student_number && tx.student_number !== 'Guest' && tx.student_number !== tx.student_name && (
+                          <small className="staff-client-sub">{`ID: ${tx.student_number}`}</small>
+                        )}
+                      </td>
+                      <td>{tx.department}</td>
+                      <td>{tx.service}</td>
+                      <td>
+                        <span className="staff-window-badge">{tx.window_number}</span>
+                      </td>
+                      <td>{tx.date}</td>
+                      <td>{tx.time_started}</td>
+                      <td>{tx.time_completed}</td>
+                      <td className="staff-tx-duration">{tx.waiting_time}</td>
+                      <td className="staff-tx-duration">{tx.service_time}</td>
+                      <td>
+                        <span className={`staff-history-status-badge status-${String(tx.status || '').toLowerCase()}`}>
+                          {tx.status}
+                        </span>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="staff-history-pagination-bar">
+            <div className="staff-pagination-info">
+              {historyPagination.total > 0 ? (
+                <>
+                  Showing <strong>{historyPagination.from}</strong> to <strong>{historyPagination.to}</strong> of <strong>{historyPagination.total}</strong> transaction{historyPagination.total !== 1 ? 's' : ''}
+                </>
+              ) : (
+                <span>0 transactions</span>
+              )}
+            </div>
+
+            <div className="staff-pagination-actions">
+              <div className="staff-per-page-select-wrap">
+                <label htmlFor="staff-per-page">Rows:</label>
+                <select
+                  id="staff-per-page"
+                  value={historyPerPage}
+                  onChange={(e) => {
+                    setHistoryPerPage(Number(e.target.value));
+                    setHistoryPage(1);
+                  }}
+                  className="staff-per-page-select"
+                >
+                  <option value={10}>10</option>
+                  <option value={25}>25</option>
+                  <option value={50}>50</option>
+                </select>
+              </div>
+
+              <button
+                type="button"
+                className="staff-pagination-nav-btn"
+                disabled={historyPage <= 1 || historyLoading}
+                onClick={() => setHistoryPage((p) => Math.max(1, p - 1))}
+                aria-label="Previous page"
+              >
+                <span className="material-symbols-outlined">chevron_left</span>
+                Prev
+              </button>
+
+              <span className="staff-pagination-page-indicator">
+                Page <strong>{historyPagination.currentPage}</strong> of <strong>{Math.max(1, historyPagination.lastPage)}</strong>
+              </span>
+
+              <button
+                type="button"
+                className="staff-pagination-nav-btn"
+                disabled={historyPage >= historyPagination.lastPage || historyLoading}
+                onClick={() => setHistoryPage((p) => Math.min(historyPagination.lastPage, p + 1))}
+                aria-label="Next page"
+              >
+                Next
+                <span className="material-symbols-outlined">chevron_right</span>
+              </button>
+            </div>
+          </div>
+        </section>
           </div>
       </>
 

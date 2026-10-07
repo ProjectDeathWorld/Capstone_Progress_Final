@@ -2,10 +2,10 @@ import assert from 'node:assert/strict'
 import { build } from 'esbuild'
 import React from 'react'
 import Renderer, { act } from 'react-test-renderer'
-const names=['callNextTicket','completeTicket','cancelTicket','getWaitingTickets','getCurrentStaffTicket','getCurrentStaffWindow','setAssignedWindowStatus']
+const names=['callNextTicket','completeTicket','cancelTicket','getWaitingTickets','getCurrentStaffTicket','getCurrentStaffWindow','setAssignedWindowStatus','getStaffQueueHistory']
 await build({entryPoints:['src/pages/StaffPanel.jsx'],outfile:'tests/.compiled/ItmQueue.js',bundle:true,format:'esm',platform:'node',jsx:'automatic',packages:'external',plugins:[{name:'api',setup(b){
  b.onResolve({filter:/\/api$/},()=>({path:'api',namespace:'mock'}))
- b.onLoad({filter:/.*/,namespace:'mock'},()=>({contents:names.map(n=>`export const ${n}=(...a)=>globalThis.testApi.${n}(...a);`).join('\n')}))
+ b.onLoad({filter:/.*/,namespace:'mock'},()=>({contents:names.map(n=>`export const ${n}=(...a)=>globalThis.testApi?.${n} ? globalThis.testApi.${n}(...a) : Promise.resolve({ data: [], total: 0, current_page: 1, last_page: 1, per_page: 10, from: 0, to: 0 });`).join('\n')}))
 }}]})
 const Staff=(await import('./.compiled/ItmQueue.js')).default
 const originalSet=globalThis.setInterval,originalClear=globalThis.clearInterval

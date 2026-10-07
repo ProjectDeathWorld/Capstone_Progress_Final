@@ -12,6 +12,7 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Carbon\Carbon;
 use Illuminate\Database\QueryException;
 
 class QueueController extends Controller
@@ -956,5 +957,227 @@ class QueueController extends Controller
         }
 
         return $user;
+    }
+
+    /**
+     * Get queue history handled exclusively by the logged-in staff member.
+     */
+    public function getStaffQueueHistory(Request $request)
+    {
+        $staff = $request->user();
+        abort_unless($staff, 401, 'Unauthenticated.');
+        abort_unless(in_array(strtolower(trim((string) $staff->role)), ['staff', 'dept_admin', 'admin'], true), 403, 'Unauthorized.');
+
+        $request->validate([
+            'period' => 'nullable|string',
+            'start_date' => 'nullable|date_format:Y-m-d',
+            'end_date' => 'nullable|date_format:Y-m-d|after_or_equal:start_date',
+            'search' => 'nullable|string|max:100',
+            'page' => 'nullable|integer|min:1',
+            'per_page' => 'nullable|integer|min:1|max:100',
+        ]);
+
+        $period = strtolower((string) $request->query('period', 'today'));
+        $startDate = $request->query('start_date');
+        $endDate = $request->query('end_date');
+        $search = trim((string) $request->query('search', ''));
+        $perPage = (int) $request->query('per_page', 10);
+        if ($perPage < 1) $perPage = 10;
+        if ($perPage > 100) $perPage = 100;
+
+        $staffId = $staff->user_id;
+
+        $query = ServiceTransaction::where('staff_id', $staffId)
+            ->with('ticket');
+
+        if ($period === 'custom' && $startDate) {
+            $start = Carbon::parse($startDate, 'Asia/Manila')->startOfDay();
+            $end = Carbon::parse($endDate ?: $startDate, 'Asia/Manila')->endOfDay();
+            $query->where(function ($q) use ($start, $end) {
+                $q->whereBetween('start_time', [$start->copy()->utc(), $end->copy()->utc()])
+                  ->orWhere(function ($sub) use ($start, $end) {
+                      $sub->whereNull('start_time')
+                          ->whereHas('ticket', function ($tq) use ($start, $end) {
+                              $tq->whereBetween('created_at', [$start->copy()->utc(), $end->copy()->utc()]);
+                          });
+                  });
+            });
+        } elseif ($period === 'today') {
+            $start = Carbon::today('Asia/Manila')->startOfDay();
+            $end = Carbon::today('Asia/Manila')->endOfDay();
+            $query->where(function ($q) use ($start, $end) {
+                $q->whereBetween('start_time', [$start->copy()->utc(), $end->copy()->utc()])
+                  ->orWhere(function ($sub) use ($start, $end) {
+                      $sub->whereNull('start_time')
+                          ->whereHas('ticket', function ($tq) use ($start, $end) {
+                              $tq->whereBetween('created_at', [$start->copy()->utc(), $end->copy()->utc()]);
+                          });
+                  });
+            });
+        } elseif (in_array($period, ['week', 'this_week', 'weekly'], true)) {
+            $start = Carbon::now('Asia/Manila')->startOfWeek()->startOfDay();
+            $end = Carbon::now('Asia/Manila')->endOfWeek()->endOfDay();
+            $query->where(function ($q) use ($start, $end) {
+                $q->whereBetween('start_time', [$start->copy()->utc(), $end->copy()->utc()])
+                  ->orWhere(function ($sub) use ($start, $end) {
+                      $sub->whereNull('start_time')
+                          ->whereHas('ticket', function ($tq) use ($start, $end) {
+                              $tq->whereBetween('created_at', [$start->copy()->utc(), $end->copy()->utc()]);
+                          });
+                  });
+            });
+        } elseif (in_array($period, ['month', 'this_month', 'monthly'], true)) {
+            $start = Carbon::now('Asia/Manila')->startOfMonth()->startOfDay();
+            $end = Carbon::now('Asia/Manila')->endOfMonth()->endOfDay();
+            $query->where(function ($q) use ($start, $end) {
+                $q->whereBetween('start_time', [$start->copy()->utc(), $end->copy()->utc()])
+                  ->orWhere(function ($sub) use ($start, $end) {
+                      $sub->whereNull('start_time')
+                          ->whereHas('ticket', function ($tq) use ($start, $end) {
+                              $tq->whereBetween('created_at', [$start->copy()->utc(), $end->copy()->utc()]);
+                          });
+                  });
+            });
+        }
+
+        if ($search !== '') {
+            $query->whereHas('ticket', function ($q) use ($search) {
+                $q->where(function ($sub) use ($search) {
+                    $sub->where('ticket_number', 'LIKE', "%{$search}%")
+                        ->orWhere('student_name', 'LIKE', "%{$search}%")
+                        ->orWhere('student_number', 'LIKE', "%{$search}%");
+                });
+            });
+        }
+
+        $query->orderBy('start_time', 'desc')->orderBy('transaction_id', 'desc');
+
+        $paginated = $query->paginate($perPage);
+
+        $staffAssignedWindowNumber = $this->resolveStaffWindowNumber($staff);
+
+        $items = collect($paginated->items())->map(function ($transaction) use ($staff, $staffAssignedWindowNumber) {
+            $ticket = $transaction->ticket;
+
+            $deptCode = $ticket?->service_type ?: ($staff->position ?? 'cashier');
+            $department = \App\Services\Departments::name($deptCode);
+
+            $queueNumber = $ticket?->ticket_number ?? '—';
+
+            $studentName = '—';
+            if ($ticket && !empty(trim((string) $ticket->student_name))) {
+                $studentName = trim($ticket->student_name);
+            } elseif ($ticket && !empty(trim((string) $ticket->student_number)) && strtolower(trim($ticket->student_number)) !== 'guest') {
+                $studentName = trim($ticket->student_number);
+            } elseif ($ticket && strtolower(trim((string) $ticket->student_number)) === 'guest') {
+                $studentName = 'Guest';
+            }
+
+            $serviceName = '—';
+            if ($ticket && !empty(trim((string) $ticket->transaction_type))) {
+                $serviceName = trim($ticket->transaction_type);
+            } else {
+                $serviceName = $department . ' Service';
+            }
+
+            $windowNum = $ticket?->window ?? $staffAssignedWindowNumber;
+            $windowDisplay = $windowNum !== null ? (string) $windowNum : '—';
+
+            $dateCarbon = $transaction->start_time
+                ? $transaction->start_time->copy()->setTimezone('Asia/Manila')
+                : ($ticket?->created_at ? $ticket->created_at->copy()->setTimezone('Asia/Manila') : null);
+            $formattedDate = $dateCarbon ? $dateCarbon->format('M j, Y') : '—';
+            $rawDate = $dateCarbon ? $dateCarbon->format('Y-m-d') : null;
+
+            $startTimeCarbon = $transaction->start_time
+                ? $transaction->start_time->copy()->setTimezone('Asia/Manila')
+                : ($ticket?->called_at ? $ticket->called_at->copy()->setTimezone('Asia/Manila') : null);
+            $timeStarted = $startTimeCarbon ? $startTimeCarbon->format('g:i A') : '—';
+
+            $endTimeCarbon = $transaction->end_time
+                ? $transaction->end_time->copy()->setTimezone('Asia/Manila')
+                : ($ticket?->completed_at ? $ticket->completed_at->copy()->setTimezone('Asia/Manila') : null);
+            $timeCompleted = $endTimeCarbon ? $endTimeCarbon->format('g:i A') : '—';
+
+            $waitingTime = '—';
+            $waitingSeconds = null;
+            if ($ticket?->created_at && $transaction->start_time) {
+                $waitingSeconds = abs($transaction->start_time->diffInSeconds($ticket->created_at));
+                $minutes = (int) round($waitingSeconds / 60);
+                if ($waitingSeconds < 60) {
+                    $waitingTime = '< 1 min';
+                } else {
+                    $waitingTime = $minutes === 1 ? '1 min' : "{$minutes} mins";
+                }
+            }
+
+            $serviceTime = '—';
+            $serviceSeconds = null;
+            if ($transaction->duration_seconds !== null) {
+                $serviceSeconds = (int) $transaction->duration_seconds;
+                $minutes = (int) round($serviceSeconds / 60);
+                if ($serviceSeconds < 60) {
+                    $serviceTime = $serviceSeconds > 0 ? "{$serviceSeconds}s" : '< 1 min';
+                } else {
+                    $serviceTime = $minutes === 1 ? '1 min' : "{$minutes} mins";
+                }
+            } elseif ($transaction->start_time && $transaction->end_time) {
+                $serviceSeconds = abs($transaction->end_time->diffInSeconds($transaction->start_time));
+                $minutes = (int) round($serviceSeconds / 60);
+                if ($serviceSeconds < 60) {
+                    $serviceTime = $serviceSeconds > 0 ? "{$serviceSeconds}s" : '< 1 min';
+                } else {
+                    $serviceTime = $minutes === 1 ? '1 min' : "{$minutes} mins";
+                }
+            } elseif ($transaction->start_time && !$transaction->end_time && strtolower((string) $ticket?->status) === 'serving') {
+                $serviceTime = 'Serving...';
+            }
+
+            $ticketStatus = strtolower(trim((string) ($ticket?->status ?? '')));
+            $status = 'Completed';
+            if ($ticketStatus === 'done' || $ticketStatus === 'completed' || $transaction->end_time) {
+                if ($transaction->remarks === 'Skip / No Show' || $ticketStatus === 'cancelled') {
+                    $status = 'Skipped';
+                } else {
+                    $status = 'Completed';
+                }
+            } elseif ($ticketStatus === 'cancelled' || $transaction->remarks === 'Skip / No Show') {
+                $status = 'Skipped';
+            } elseif ($ticketStatus === 'serving' || ($transaction->start_time && !$transaction->end_time)) {
+                $status = 'Serving';
+            } else {
+                $status = ucfirst($ticketStatus ?: 'Completed');
+            }
+
+            return [
+                'transaction_id' => $transaction->transaction_id,
+                'ticket_id' => $transaction->ticket_id,
+                'queue_number' => $queueNumber,
+                'student_name' => $studentName,
+                'student_number' => $ticket?->student_number ?: null,
+                'department' => $department,
+                'service' => $serviceName,
+                'window_number' => $windowDisplay,
+                'date' => $formattedDate,
+                'date_raw' => $rawDate,
+                'time_started' => $timeStarted,
+                'time_completed' => $timeCompleted,
+                'waiting_time' => $waitingTime,
+                'waiting_seconds' => $waitingSeconds,
+                'service_time' => $serviceTime,
+                'service_seconds' => $serviceSeconds,
+                'status' => $status,
+            ];
+        });
+
+        return response()->json([
+            'data' => $items,
+            'total' => $paginated->total(),
+            'current_page' => $paginated->currentPage(),
+            'last_page' => $paginated->lastPage(),
+            'per_page' => $paginated->perPage(),
+            'from' => $paginated->firstItem(),
+            'to' => $paginated->lastItem(),
+        ]);
     }
 }

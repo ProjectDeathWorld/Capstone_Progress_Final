@@ -64,6 +64,7 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\EnsureDepartmentEnabled:
     Route::get('/staff/current-window', [WindowController::class, 'currentWindow']);
     Route::get('/staff/current-ticket', [QueueController::class, 'getCurrentTicket']);
     Route::get('/staff/queue/waiting', [QueueController::class, 'getStaffWaitingTickets']);
+    Route::get('/staff/queue/history', [QueueController::class, 'getStaffQueueHistory']);
     Route::put('/staff/window', [WindowController::class, 'updateAssigned']);
     Route::patch('/staff/window/status', [WindowController::class, 'updateAssignedStatus']);
     Route::post('/windows/toggle', [WindowController::class, 'toggleAvailability']);

@@ -6,7 +6,7 @@ import { isMiniStaffUser } from '../src/utils/staffMiniWindow.js'
 
 await build({ entryPoints: ['src/pages/StaffPanel.jsx'], outfile: 'tests/.compiled/DepartmentStaff.js', bundle: true, format: 'esm', platform: 'node', jsx: 'automatic', packages: 'external', plugins: [{ name: 'api', setup(b) {
   b.onResolve({ filter: /\/api$/ }, () => ({ path: 'api', namespace: 'fixture' }))
-  b.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: ['callNextTicket', 'completeTicket', 'cancelTicket', 'getWaitingTickets', 'getCurrentStaffTicket', 'getCurrentStaffWindow', 'setAssignedWindowStatus'].map(name => `export const ${name}=(...args)=>globalThis.testApi.${name}(...args);`).join('\n') }))
+  b.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: ['callNextTicket', 'completeTicket', 'cancelTicket', 'getWaitingTickets', 'getCurrentStaffTicket', 'getCurrentStaffWindow', 'setAssignedWindowStatus', 'getStaffQueueHistory'].map(name => `export const ${name}=(...args)=>globalThis.testApi?.${name} ? globalThis.testApi.${name}(...args) : Promise.resolve({ data: [], total: 0, current_page: 1, last_page: 1, per_page: 10, from: 0, to: 0 });`).join('\n') }))
 } }] })
 const Staff = (await import('./.compiled/DepartmentStaff.js')).default
 const timers = new Map(); let nextId = 0

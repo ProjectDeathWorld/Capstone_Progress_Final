@@ -202,6 +202,14 @@ export async function getCurrentStaffTicket(signal = null) {
   });
 }
 
+export async function getStaffQueueHistory({ period = 'today', startDate = null, endDate = null, search = '', page = 1, perPage = 10 } = {}, signal = null) {
+  let url = `${API_BASE}/staff/queue/history?period=${encodeURIComponent(period)}&page=${page}&per_page=${perPage}`;
+  if (startDate) url += `&start_date=${encodeURIComponent(startDate)}`;
+  if (endDate) url += `&end_date=${encodeURIComponent(endDate)}`;
+  if (search) url += `&search=${encodeURIComponent(search)}`;
+  return fetchJson(url, { headers: getHeaders(true), signal, cache: 'no-store' });
+}
+
 export async function getDisplayConfiguration(signal = null) {
   return fetchJson(`${API_BASE}/display-configuration`, {
     headers: getHeaders(),
